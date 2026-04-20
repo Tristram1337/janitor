@@ -1,0 +1,157 @@
+//! Low-level mode/owner mutations (raw `chmod`/`lchown`), with no snapshotting.
+
+use std::fs;
+use std::os::unix::fs::{chown, MetadataExt, PermissionsExt};
+use std::path::Path;
+
+use crate::acl::restore_acl;
+use crate::errors::{PmError, Result};
+use crate::types::{AccessBits, SnapEntry};
+use crate::users::lookup_group;
+
+/// Restore mode/uid/gid (and ACLs, if captured) from a snapshot.
+/// Processes entries in reverse (leaves first) so that restoring a
+/// parent's stricter perms doesn't block access to children we still
+/// need to restore.
+pub fn apply_restore(entries: &[SnapEntry], dry_run: bool) -> u32 {
+    let mut errors = 0u32;
+    for entry in entries.iter().rev() {
+        let p = &entry.path;
+        if p.symlink_metadata().is_err() {
+            eprintln!("skip (missing): {}", p.display());
+            continue;
+        }
+        let perm = entry.perm & 0o7777;
+        let uid = entry.uid;
+        let gid = entry.gid;
+
+        if entry.is_symlink {
+            if dry_run {
+                println!("[dry-run] chown -h {uid}:{gid} {}", p.display());
+            } else {
+                // lchown: do NOT follow symlinks (unlike std::os::unix::fs::chown).
+                use std::ffi::CString;
+                use std::os::unix::ffi::OsStrExt;
+                let c_path = CString::new(p.as_os_str().as_bytes()).unwrap();
+                let ret = unsafe { libc::lchown(c_path.as_ptr(), uid, gid) };
+                if ret != 0 {
+                    let e = std::io::Error::last_os_error();
+                    eprintln!("error restoring ownership on {}: {e}", p.display());
+                    errors += 1;
+                }
+            }
+            continue;
+        }
+
+        if dry_run {
+            println!("[dry-run] chmod {perm:04o} {}", p.display());
+            println!("[dry-run] chown {uid}:{gid} {}", p.display());
+        } else {
+            let set_perms = || -> std::io::Result<()> {
+                fs::set_permissions(p, fs::Permissions::from_mode(perm))?;
+                chown(p, Some(uid), Some(gid))?;
+                Ok(())
+            };
+            if let Err(e) = set_perms() {
+                eprintln!("error restoring {}: {e}", p.display());
+                errors += 1;
+            }
+        }
+
+        // Restore ACLs if captured. Do this AFTER chmod, since chmod can
+        // rewrite the mask and drop ACL entries.
+        if entry.acl.is_some() || entry.default_acl.is_some() {
+            if let Err(e) = restore_acl(
+                p,
+                entry.acl.as_deref(),
+                entry.default_acl.as_deref(),
+                dry_run,
+            ) {
+                eprintln!("error restoring ACL on {}: {e}", p.display());
+                errors += 1;
+            }
+        }
+    }
+    errors
+}
+
+/// chgrp + set group permission triad on a path.
+///
+/// If `replace` is true, group triad is set to exactly `add_bits`
+/// (used on parent dirs; strips any pre-existing group read/write).
+///
+/// If `replace` is false, `add_bits` is OR-ed into existing triad
+/// (used on the target itself).
+///
+/// Never touches user or other bits. If path is a directory and we're
+/// adding `r`, forces `x` on too.
+pub fn apply_group_bits(
+    path: &Path,
+    group: &str,
+    add_bits: AccessBits,
+    dry_run: bool,
+    replace: bool,
+) -> Result<()> {
+    let md = fs::symlink_metadata(path).map_err(|e| PmError::InsufficientPrivileges {
+        path: path.to_path_buf(),
+        reason: e.to_string(),
+    })?;
+
+    if md.file_type().is_symlink() {
+        return Ok(()); // never chmod symlinks
+    }
+
+    let current = md.mode() & 0o7777;
+    let existing_group_triad = (current & 0o070) >> 3;
+
+    let new_triad = if replace {
+        add_bits.0
+    } else {
+        existing_group_triad | add_bits.0
+    };
+
+    // If directory and adding read, force exec too (listing without traversal is useless).
+    let new_triad = if md.is_dir() && (add_bits.0 & 0o4 != 0) {
+        new_triad | 0o1
+    } else {
+        new_triad
+    };
+
+    let new_mode = (current & !0o070) | (new_triad << 3);
+
+    if dry_run {
+        println!("[dry-run] chgrp {group} {}", path.display());
+        if new_mode != current {
+            let note = if replace && existing_group_triad > new_triad {
+                "  ⚠ reducing group bits"
+            } else {
+                ""
+            };
+            println!(
+                "[dry-run] chmod {new_mode:04o} {}  (was {current:04o}){note}",
+                path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    let gid = lookup_group(group)?.gid;
+
+    // chgrp
+    chown(path, None::<u32>, Some(gid.as_raw())).map_err(|e| PmError::InsufficientPrivileges {
+        path: path.to_path_buf(),
+        reason: e.to_string(),
+    })?;
+
+    // chmod (only if changed)
+    if new_mode != current {
+        fs::set_permissions(path, fs::Permissions::from_mode(new_mode)).map_err(|e| {
+            PmError::InsufficientPrivileges {
+                path: path.to_path_buf(),
+                reason: e.to_string(),
+            }
+        })?;
+    }
+
+    Ok(())
+}

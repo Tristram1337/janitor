@@ -1,0 +1,1173 @@
+'\" t
+.TH JANITOR 1 "2026-04-21" "janitor 0.1.0" "User Commands"
+.SH NAME
+janitor \- hierarchical Unix permissions manager with snapshots and ACL support
+.SH SYNOPSIS
+.B janitor
+[\fIGLOBAL OPTIONS\fR]
+\fICOMMAND\fR
+[\fIPATH\fR]
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B janitor
+grants, revokes, audits, and reverts Unix filesystem permissions with a
+hierarchical model: granting access to a file also opens the minimum required
+traverse-only (\fB\-\-x\fR) bits on every parent directory, so siblings stay
+invisible. Every mutating command writes a MessagePack snapshot to
+.I /var/lib/janitor/backups
+(root) or
+.I ~/.local/share/janitor/backups
+(non-root) before touching anything, so any change can be reverted exactly with
+.BR "janitor restore " ID .
+.PP
+Symlinks' own permission bits are never modified;
+.BR lchown (2)
+is used so symlinks are repointed by owner without following them.
+.PP
+Most subcommands take the target
+.I PATH
+as a positional argument, followed by options. Short single-letter flags
+are provided for the most common options, following the conventions of
+.BR chmod (1)
+and
+.BR chown (1)
+(in particular
+.BR \-R
+for recursive).
+.SH GLOBAL OPTIONS
+.TP
+.BR \-n ", " \-\-dry\-run
+Print what would be done without touching the filesystem. Safe to run as root.
+.TP
+.BR \-j ", " \-\-json
+Emit machine-readable JSON where the subcommand supports it
+.RB ( audit ", " find-orphans ", " who-can ", " diff ", " export ", " list-backups ).
+.TP
+.BR \-q ", " \-\-quiet
+Suppress non-essential output. Data output is preserved; only progress /
+advisory lines are silenced.
+.TP
+.BR \-h ", " \-\-help
+Show help and exit.
+.TP
+.BR \-V ", " \-\-version
+Show version and exit.
+.SH COMMAND OVERVIEW
+.TS
+l l.
+\fBCommand\fR	\fBPurpose\fR
+grant (g)	Hierarchical grant with auto-snapshot
+revoke (rv)	Soft revoke (remove user from managed group)
+tree (t)	Colored permission tree, honors \fB-U USER\fR
+backup (b)	Manual snapshot without changes
+restore (r)	Full revert of a specific backup
+undo (u)	Restore the most recent backup (one-shot revert)
+history (h)	Backups whose target contains PATH (newest first)
+copy-perms (cp)	Copy mode + owner + group (+ ACL) from SRC to DST
+list-backups (ls)	List saved snapshots (filterable by \fB-p SUBSTR\fR)
+prune-backups (prune)	Keep the N most recent backups
+diff	Show what \fBrestore\fR would change
+export	Dump a backup as text or JSON
+chmod	chmod (octal + symbolic, setuid/setgid/sticky, \fB--reference\fR) with auto-snapshot
+chown	chown (\fIuser\fR, \fIuser:group\fR, \fI:group\fR, numeric, \fB--reference\fR) with auto-snapshot
+info (i)	One-shot summary of a path (type, owner, mode, ACLs)
+audit (a)	Scan a tree for suspicious / matching permissions
+find-orphans	Files whose UID / GID is not in /etc/passwd /group
+who-can (w)	Reverse query: which users can read / write / exec a path
+acl	POSIX ACL management (\fBgrant\fR|\fBrevoke\fR|\fBshow\fR|\fBstrip\fR)
+preset (p)	Apply a named preset (\fBprivate\fR, \fBgroup-shared\fR, ...)
+presets	List all presets with modes
+completions	Emit shell completion script
+.TE
+.SH COMMANDS
+.SS grant
+.B janitor grant
+.I PATH
+.RB [ \-u
+.IR USER ]
+.RB [ \-g
+.IR GROUP ]
+.RB [ \-r ]
+.RB [ \-w ]
+.RB [ \-x ]
+.RB [ \-a
+.IR ACCESS ]
+.RB [ \-L
+.IR N ]
+.RB [ \-R ]
+.RB [ \-\-force\-all\-parents ]
+.RB [ \-\-capture\-acl ]
+.PP
+Grant
+.I USER
+(or
+.IR GROUP )
+access to
+.IR PATH .
+A managed group is auto-created (named
+.BI pm_tmp_ <owner>_<pathhash> )
+unless
+.B \-g
+is given. Parents are opened with
+.B \-\-x
+only. Exactly one of
+.B \-u
+or
+.B \-g
+must be provided.
+.PP
+Access is specified either with the boolean flags
+.BR \-r ", " \-w ", " \-x
+or with the string
+.BR \-a / \-\-access " \fIACCESS\fR" .
+If no access flag is given, defaults to read-only. The two forms cannot be mixed.
+.TP
+.BR \-u ", " \-\-user " \fIUSER\fR"
+User to grant access to.
+.TP
+.BR \-g ", " \-\-group " \fIGROUP\fR"
+Group to grant access to (instead of a user, or as the managed group when combined with
+.BR \-u ).
+.TP
+.BR \-r ", " \-\-read
+Add the read bit.
+.TP
+.BR \-w ", " \-\-write
+Add the write bit.
+.TP
+.BR \-x ", " \-\-exec
+Add the execute / traverse bit.
+.TP
+.BR \-a ", " \-\-access " \fIACCESS\fR"
+String form of the bits above
+.RB ( r ", " rw ", " rwx ).
+Mutually exclusive with
+.BR \-r / \-w / \-x .
+.TP
+.BR \-L ", " \-\-max\-level " \fIN\fR"
+Limit how many parent directory levels above
+.I PATH
+are made traversable.
+.TP
+.BR \-R ", " \-\-recursive
+Also apply the grant to every file and subdirectory under
+.I PATH
+(the directory tree is walked).
+.TP
+.B \-\-force\-all\-parents
+Grant even if a parent is world-readable (normally a warning is emitted and the grant
+continues; this flag suppresses the warning check).
+.TP
+.B \-\-capture\-acl
+Include existing ACLs in the snapshot taken before the change, so
+.B restore
+also brings ACLs back (otherwise only mode and owner are captured).
+.SS revoke
+.B janitor revoke
+.I PATH
+.BR \-u
+.I USER
+.RB [ \-g
+.IR GROUP ]
+.PP
+Remove
+.I USER
+from the managed group of
+.IR PATH .
+This is an
+.B all-or-nothing
+revoke: the user loses every bit of access that was granted via that group. The
+file's mode, ACLs, and the managed group itself are untouched; other members of
+the group keep their access.
+.PP
+For
+.B bit-level
+revocation use one of:
+.TP
+.B janitor chmod \fIMODE\fR \fIPATH\fR
+Adjust traditional mode bits (also auto-snapshotted).
+.TP
+.B janitor acl revoke \fIPATH\fR \-u \fIUSER\fR
+Remove a specific ACL entry.
+.TP
+.B janitor restore \fIID\fR
+Undo a specific earlier grant exactly.
+.SS tree
+.B janitor tree
+.I PATH
+.RB [ \-L
+.IR DEPTH ]
+.RB [ \-P ]
+.RB [ \-H
+.IR SUBSTR ]
+.RB [ \-U
+.IR USER ]
+.RB [ \-c
+.IR auto|always|never ]
+.RB [ \-A ]
+.PP
+Print a colored permission tree. With
+.B \-U USER
+entries are tinted green, yellow, or red depending on whether that user can
+read, can traverse but not read, or is denied. With
+.B \-A
+a
+.B +
+marker is appended to the mode of entries that carry POSIX ACLs.
+.SS chmod
+.B janitor chmod
+.I MODE PATH
+.RB [ \-R ]
+.RB [ \-A ]
+.RB [ \-F\ FILE " | " \-\-reference\ FILE ]
+.PP
+Change the mode using octal or symbolic notation. An auto-snapshot is taken
+first so the change is revertible via
+.BR restore .
+.PP
+.B Note on naming.
+.B janitor chmod
+is not a wrapper around the coreutils
+.BR chmod (1)
+binary. It invokes the
+.BR chmod (2)
+syscall directly via
+.BR std::fs::set_permissions .
+The file-system effect is identical to POSIX chmod; the value added is the
+automatic snapshot, lock-check, variadic paths,
+.BR \-\-exclude ,
+.BR \-\-stdin0 ,
+.BR \-\-from\-file ,
+and
+.BR \-\-reference .
+.PP
+.B Octal forms
+support the full 4-digit syntax with special bits:
+.IP \(bu 2
+\fB755\fR, standard rwxr-xr-x
+.IP \(bu 2
+\fB4755\fR, setuid (run as owner)
+.IP \(bu 2
+\fB2755\fR, setgid (inherit group, or run as group)
+.IP \(bu 2
+\fB1777\fR, sticky bit (directory: only owner can delete)
+.IP \(bu 2
+\fB6755\fR, setuid + setgid
+.IP \(bu 2
+\fB7777\fR, all special bits + rwxrwxrwx
+.PP
+.B Symbolic forms
+accept comma-separated clauses of \fB[ugoa][+\-=][rwxXst]\fR, e.g.
+.BR "u+rw,go\-w" ,
+.BR "a+X"
+(add x only to dirs/already-exec),
+.BR "u+s"
+(setuid),
+.BR "g+s"
+(setgid),
+.BR "+t"
+(sticky),
+.BR "u\-s,g\-s,\-t"
+(clear all special bits).
+.PP
+With
+.B \-F
+/ \fB\-\-reference FILE\fR the mode is copied from
+.I FILE
+and the
+.I MODE
+argument is ignored (pass
+.B \-
+as a placeholder).
+.SS chown
+.B janitor chown
+.I SPEC PATH
+.RB [ \-R ]
+.RB [ \-A ]
+.RB [ \-F\ FILE " | " \-\-reference\ FILE ]
+.PP
+Change owner/group.
+.I SPEC
+is one of
+.IR user ", " user:group ", " :group ", " user:
+(owner + that owner's primary group) or numeric
+.IR UID:GID .
+Symlinks are always handled with
+.BR lchown (2);
+targets are never followed, even under
+.BR \-R .
+With
+.B \-F
+/ \fB\-\-reference FILE\fR the owner and group are copied from
+.IR FILE .
+.PP
+.B Note on naming.
+.B janitor chown
+is not a wrapper around the coreutils
+.BR chown (1)
+binary. It invokes the
+.BR lchown (2)
+syscall directly via
+.BR libc::lchown .
+The file-system effect is identical to
+.BR "chown -h" ;
+the value added is the automatic snapshot, lock-check, variadic paths,
+.BR \-\-exclude ,
+.BR \-\-stdin0 ,
+.BR \-\-from\-file ,
+and
+.BR \-\-reference .
+.SS info
+.B janitor info
+.I PATH
+.RB [ \-U\ USER " | " \-\-for\-user\ USER ]
+.PP
+One-shot summary of a path: type, owner (name + uid), group, mode (octal +
+symbolic, including setuid/setgid/sticky bits), size, mtime, symlink target,
+and ACL entries. With
+.B \-U
+also prints the effective
+.IR rwx
+access for
+.I USER
+on that inode. Alias:
+.BR i .
+.SS backup
+.B janitor backup
+.I PATH
+.RB [ \-R ]
+.RB [ \-A ]
+.PP
+Snapshot current mode, owner, group, and (with
+.BR \-A )
+ACLs without making any change. Output includes the backup id.
+.SS restore
+.B janitor restore
+.I BACKUP_ID
+.PP
+Revert a snapshot. Mode, owner, group, and (if captured) ACLs are restored
+atomically per path. Symlinks use
+.BR lchown (2).
+.SS undo
+.B janitor undo
+.PP
+Restore the most recent backup. Shortcut for looking up the newest snapshot
+and running
+.B restore
+on it: an editor-style one-shot undo after any
+.BR grant ", " chmod ", " chown ", or " acl
+operation. Alias:
+.BR u .
+Combine with
+.B \-\-dry\-run
+to preview what would be reverted.
+.SS list-backups
+.B janitor list-backups
+.RB [ \-p
+.IR SUBSTR ]
+.PP
+List saved snapshots, most recent first. With
+.B \-p
+/ \fB\-\-path\fR only entries whose target path contains the given substring
+are shown. With
+.B \-\-json
+produces an array of objects
+.RI { id ", " timestamp ", " type ", " user ", " group ", " target ", " entries }.
+.SS prune-backups
+.B janitor prune-backups
+.RB [ \-k
+.IR N ]
+.PP
+Keep only the
+.I N
+most recent backups (default:
+.BR 50 ).
+.SS diff
+.B janitor diff
+.I BACKUP_ID
+.PP
+Show what
+.B restore
+of that backup would change versus the current state (mode, owner, group,
+ACLs).
+.SS export
+.B janitor export
+.I BACKUP_ID
+.PP
+Dump a backup as text or JSON (with
+.BR \-j ).
+.SS audit
+.B janitor audit
+.I PATH
+.RB [ \-W ]
+.RB [ \-r ]
+.RB [ \-x ]
+.RB [ \-s ]
+.RB [ \-S ]
+.RB [ \-t ]
+.RB [ \-o
+.IR USER ]
+.RB [ \-g
+.IR GROUP ]
+.RB [ \-m
+.IR OCTAL ]
+.RB [ \-A ]
+.RB [ \-\-no\-owner ]
+.RB [ \-\-no\-group ]
+.PP
+Scan a tree for entries matching one or more security-relevant filters.
+Multiple filters are AND-ed.
+.TP
+.BR \-W ", " \-\-world\-writable
+Entries with the other+w bit set.
+.TP
+.BR \-r ", " \-\-world\-readable
+Entries with the other+r bit set.
+.TP
+.BR \-x ", " \-\-world\-executable
+Entries with the other+x bit set.
+.TP
+.BR \-s ", " \-\-setuid
+setuid binaries.
+.TP
+.BR \-S ", " \-\-setgid
+setgid binaries and directories.
+.TP
+.BR \-t ", " \-\-sticky
+Sticky-bit directories.
+.TP
+.BR \-o ", " \-\-owner " \fIUSER\fR"
+Only entries owned by
+.IR USER .
+.TP
+.BR \-g ", " \-\-group " \fIGROUP\fR"
+Only entries whose group is
+.IR GROUP .
+.TP
+.BR \-m ", " \-\-mode " \fIOCTAL\fR"
+Only entries whose mode exactly equals
+.IR OCTAL .
+.TP
+.BR \-A ", " \-\-has\-acl
+Only entries that carry POSIX ACLs (\fB+\fR marker in
+.BR "ls -l" ).
+.TP
+.B \-\-no\-owner
+Only entries whose UID is not in
+.IR /etc/passwd .
+.TP
+.B \-\-no\-group
+Only entries whose GID is not in
+.IR /etc/group .
+.SS history
+.B janitor history
+.I PATH
+.PP
+List every backup whose target path contains
+.IR PATH ,
+newest first. With
+.B \-\-json
+emits an array of
+.RI { id ", " timestamp ", " type ", " target ", " entries }
+objects suitable for
+.BR jq (1)
+pipelines. Alias:
+.BR h .
+.SS copy-perms
+.B janitor copy-perms
+.I SRC
+.I DST
+.RB [ \-R ]
+.RB [ \-A ]
+.PP
+Atomically copy mode + owner + group from
+.I SRC
+to
+.IR DST ,
+with an automatic snapshot of
+.I DST
+before the change.
+.TP
+.BR \-R ", " \-\-recursive
+Also apply to every entry under
+.IR DST .
+.TP
+.BR \-A ", " \-\-acl
+Also copy POSIX ACLs. If
+.I SRC
+has no extended ACL, any ACL on
+.I DST
+is stripped so the two end up identical.
+.PP
+Symlinks in
+.I DST
+have their ownership updated (\fBlchown\fR) but their mode is left alone, matching
+.BR chmod (1)
+semantics. Alias:
+.BR cp .
+.SS find-orphans
+.B janitor find-orphans
+.I PATH
+.PP
+List files whose owner UID or group GID is not resolvable in
+.I /etc/passwd
+or
+.IR /etc/group .
+.SS who-can
+.B janitor who-can
+.I PATH
+.PP
+Report which known users (from
+.IR /etc/passwd )
+can read, write, or execute
+.I PATH
+based on the full parent traversal chain plus POSIX mode bits and group
+memberships.
+.B root
+is always listed.
+.SS acl
+.B janitor acl
+.IR grant | revoke | show | strip
+.I PATH
+[\fIOPTIONS\fR]
+.PP
+Wrap
+.BR getfacl (1)
+and
+.BR setfacl (1)
+with auto-snapshots.
+.PP
+.B acl grant
+adds an ACL entry;
+.B acl revoke
+removes one;
+.B acl show
+prints the ACL in human-readable form; and
+.B acl strip
+removes all ACL entries (keeping traditional mode bits).
+.B grant
+and
+.B revoke
+accept:
+.TP
+.BR \-u ", " \-\-user " \fIUSER\fR"
+User entry to modify.
+.TP
+.BR \-g ", " \-\-group " \fIGROUP\fR"
+Group entry to modify. Mutually exclusive with
+.BR \-u .
+.TP
+.BR \-r ", " \-w ", " \-x
+Boolean access flags (combinable, any order).
+.TP
+.BR \-a ", " \-\-access " \fIACCESS\fR"
+String form of the bits (e.g.
+.BR rwx ).
+Mutually exclusive with
+.BR \-r / \-w / \-x .
+If none given, defaults to read-only.
+.TP
+.BR \-d ", " \-\-default
+Operate on the default ACL (directories only). Default ACLs are inherited by
+.I new
+children created under the directory; existing children are not modified.
+.TP
+.BR \-R ", " \-\-recursive
+Apply to every file and subdirectory under
+.I PATH
+(the tree is walked; combine with
+.B \-d
+to set the default ACL on every directory).
+.PP
+Examples:
+.PP
+.EX
+# Alice rwx on a shared dir, and inherited by new children, applied to whole tree.
+sudo janitor acl grant /srv/shared -u alice -rwx -d -R
+
+# Read-only ACL entry for a group on a single file.
+sudo janitor acl grant /etc/app/secret.conf -g auditors -r
+
+# Remove a specific ACL entry.
+sudo janitor acl revoke /srv/shared -u alice
+
+# Inspect ACLs.
+janitor acl show /srv/shared
+
+# Remove every ACL entry from a tree (keep mode bits).
+sudo janitor acl strip /srv/shared -R
+.EE
+.SS preset
+.B janitor preset
+.I NAME PATH
+.RB [ \-R ]
+.PP
+Apply a named mode preset. See
+.B janitor presets
+for the full list. A snapshot is taken first; revert with
+.B janitor restore <id>.
+.TP
+.BR \-R ", " \-\-recursive
+Also apply the preset mode to every file and subdirectory under
+.I PATH
+(the whole tree is walked). Without
+.BR \-R ,
+only
+.I PATH
+itself is changed.
+.PP
+Examples:
+.PP
+.EX
+# Lock down a single config file (600).
+sudo janitor preset private-file /etc/app/secrets.yml
+
+# Make /srv/team a group-shared dir (770) and recurse into its contents.
+sudo janitor preset group-shared /srv/team -R
+
+# Set a setgid directory so new children inherit the group (2775).
+sudo janitor preset setgid-dir /srv/team
+
+# Public-readable tree (755 dirs / 644 files -- pick the preset that matches).
+sudo janitor preset public-read /srv/www -R
+.EE
+.PP
+Typical presets:
+.TP
+.B private
+700, owner only.
+.TP
+.B private-file
+600.
+.TP
+.B group-shared
+770, owner + group, no other.
+.TP
+.B group-read
+750.
+.TP
+.B public-read
+755.
+.TP
+.B public-file
+644.
+.TP
+.B secret
+400, read-only for owner, nobody else.
+.TP
+.B setgid-dir
+2775, children inherit the group.
+.TP
+.B sticky-dir
+1777,
+.I /tmp
+style.
+.TP
+.B secret-dir
+500, readable & traversable by owner only (read-only).
+.TP
+.B exec-only
+711, owner rwx; others may traverse but not list.
+.TP
+.B ssh-key
+600, matches what
+.BR sshd (8)
+demands for private keys.
+.TP
+.B ssh-dir
+700, for
+.IR ~/.ssh .
+.TP
+.B config
+640, config readable by the owner's group.
+.TP
+.B log-file
+640, log readable by owner + group.
+.TP
+.B systemd-unit
+644, matches the expected mode for
+.IR /etc/systemd/system/*.service .
+.TP
+.B read-only
+444, readable by everyone and writable by no one.
+.TP
+.B no-access
+000, a "panic button" to freeze a path until it is investigated.
+.SS completions
+.B janitor completions
+.I SHELL
+.PP
+Emit a shell completion script for
+.IR bash ", " zsh ", " fish ", " powershell ", or " elvish .
+.SH WORKFLOWS
+.SS Inspecting a single path
+One command for "what is going on with this file?":
+.PP
+.RS
+.EX
+# Type, owner, group, mode (octal + symbolic), setuid/setgid/sticky,
+# size, mtime, symlink target, and ACLs -- all in one view.
+janitor info /usr/bin/sudo
+
+# Also show the effective rwx access for user alice.
+janitor info /srv/app/config.yml -U alice
+.EE
+.RE
+.SS Granting access to a shared project directory
+A team of developers needs rwx access to
+.I /srv/app
+without the project becoming world-readable.
+.PP
+.RS
+.EX
+# 1. Create a team group if one does not exist.
+sudo groupadd devs
+sudo usermod -aG devs alice
+sudo usermod -aG devs bob
+
+# 2. Set the group on the directory tree and give it rwx, owner untouched.
+sudo janitor chown :devs /srv/app -R
+sudo janitor preset group-shared /srv/app -R
+
+# 3. Make new files inherit the group and a sane mode.
+sudo janitor preset setgid-dir /srv/app -R
+sudo janitor acl grant /srv/app -g devs -rwx -d -R
+.EE
+.RE
+.PP
+Any developer can now create files under
+.I /srv/app
+that are automatically group-owned by
+.B devs
+and rwx-accessible to the group, without being visible to other system users.
+.SS One-off access to a nested file
+Auditor Carol needs read access to
+.I /var/backups/db/dump.sql
+for one afternoon, without exposing the rest of
+.IR /var/backups .
+.PP
+.RS
+.EX
+# Grant (default is read-only), take note of the backup id it prints.
+sudo janitor grant /var/backups/db/dump.sql -u carol -r
+# ... auditor does her work ...
+
+# Full revert when she's done.
+sudo janitor ls | head -1        # newest-first list, one line per backup
+sudo janitor restore <ID>
+.EE
+.RE
+.PP
+Siblings in
+.I /var/backups
+and
+.I /var/backups/db
+remained invisible throughout; Carol could
+.BR cat (1)
+the dump file but not list the directories.
+.SS Auditing a server before handover
+.PP
+.RS
+.EX
+# World-writable, setuid, setgid, and sticky-bit surprises.
+sudo janitor audit / -W -s -S -t --json | jq
+
+# Files whose owners no longer exist.
+sudo janitor find-orphans / --json
+
+# Who exactly can read /etc/shadow today?
+janitor who-can /etc/shadow
+
+# Files with unexpected POSIX ACLs.
+sudo janitor audit / -A --json | jq '.[].path'
+.EE
+.RE
+.SS Safe chmod / chown with rollback
+Every
+.B chmod
+and
+.B chown
+is snapshotted first:
+.PP
+.RS
+.EX
+sudo janitor chmod 640 /etc/nginx/conf.d/site.conf
+sudo janitor chown root:www-data /var/www -R
+
+# Oops, wrong group? Find the latest backup id and revert it.
+# `janitor ls` lists backups newest-first, one per line, with the id as
+# the first whitespace-separated column; `head -1` picks the newest line
+# and `awk '{print $1}'` extracts just the id:
+sudo janitor ls | head -1                   # full line for a human
+BID=$(sudo janitor ls | head -1 | awk '{print $1}')
+sudo janitor restore "$BID"
+.EE
+.RE
+.SS Deploying ACL-based permissions
+.PP
+.RS
+.EX
+# Give bob rwx on a shared dir, inherited by every new child.
+sudo janitor acl grant /srv/shared -u bob -rwx -d -R
+
+# Remove bob's ACL (keeps the default for new files).
+sudo janitor acl revoke /srv/shared -u bob -R
+
+# Nuke all ACLs, keep only the traditional mode bits.
+sudo janitor acl strip /srv/shared -R
+.EE
+.RE
+.SS Previewing before committing
+Every mutating command supports
+.BR \-n / \-\-dry\-run :
+.PP
+.RS
+.EX
+sudo janitor -n grant /srv/data/report.txt -u alice -r
+sudo janitor -n chown alice:devs /srv/app -R
+sudo janitor -n preset setgid-dir /srv/team -R
+.EE
+.RE
+.SS Backup management
+.PP
+.RS
+.EX
+# List human-readable (newest first, one line per backup).
+janitor ls
+
+# Find the newest backup id programmatically (for scripting).
+janitor ls | head -1 | awk '{print $1}'
+
+# Or use the JSON form and jq, e.g. ids of every backup touching /srv.
+janitor -j ls | jq -r '.[] | select(.target | startswith("/srv")) | .id'
+
+# Diff a backup against the current state (shows exactly what restore would undo).
+janitor diff <ID>
+
+# Dump a backup as structured JSON (all original mode/owner/ACL triples).
+janitor -j export <ID>
+
+# Keep the 20 most recent backups, delete the rest.
+sudo janitor prune -k 20
+
+# Full revert of the most recent change in one line.
+sudo janitor restore "$(sudo janitor ls | head -1 | awk '{print $1}')"
+.EE
+.RE
+.SH EXAMPLES CATALOG
+Every command the tool supports, with at least one example per flag
+combination. All mutating commands snapshot first and can be reverted with
+.B janitor undo
+or
+.BR "janitor restore " <id> .
+.SS grant / revoke
+.PP
+.RS
+.EX
+sudo janitor grant  /srv/docs/secret.txt -u alice -r
+sudo janitor grant  /srv/project         -u alice -r -w -R
+sudo janitor grant  /srv/project         -g devs  -a rw -R
+sudo janitor grant  /srv/docs            -u alice -x
+sudo janitor -n grant /srv/project -u alice -rw -R   # dry-run
+sudo janitor revoke /srv/project -u alice
+.EE
+.RE
+.SS chmod
+.PP
+.RS
+.EX
+sudo janitor chmod 644  /etc/nginx/nginx.conf
+sudo janitor chmod 755  /usr/local/bin/tool
+sudo janitor chmod 4755 /usr/local/bin/suid-helper
+sudo janitor chmod 2755 /srv/shared
+sudo janitor chmod 1777 /srv/tmp
+sudo janitor chmod 6755 /usr/local/bin/suid-sgid
+sudo janitor chmod u+rwx,g=rx,o= /srv/private
+sudo janitor chmod a+X  /srv/project -R
+sudo janitor chmod -F /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+.EE
+.RE
+.SS chown
+.PP
+.RS
+.EX
+sudo janitor chown alice        /srv/alice
+sudo janitor chown alice:devs   /srv/project -R
+sudo janitor chown :devs        /srv/project
+sudo janitor chown alice:       /srv/alice
+sudo janitor chown 1000:1000    /srv/legacy
+sudo janitor chown -F /etc/passwd /srv/new-file
+.EE
+.RE
+.SS info
+.PP
+.RS
+.EX
+janitor info /etc/shadow
+janitor info /etc/shadow -U alice
+janitor -j info /srv/project | jq
+.EE
+.RE
+.SS audit
+.PP
+.RS
+.EX
+janitor audit / -W              # world-writable
+janitor audit / -r              # world-readable
+janitor audit / -x              # world-executable
+janitor audit / -s              # setuid
+janitor audit / -S              # setgid
+janitor audit / -t              # sticky-bit directories
+janitor audit / -A              # entries with POSIX ACLs
+janitor audit / -m 777          # exact-mode
+janitor audit / -o alice        # owner
+janitor audit / -g devs         # group
+janitor audit / --no-owner      # orphan UID
+janitor audit / --no-group      # orphan GID
+janitor audit /srv -W -s        # AND filters
+janitor --json audit / -W | jq -r '.[].path'
+.EE
+.RE
+.SS find-orphans / who-can
+.PP
+.RS
+.EX
+janitor find-orphans /home
+janitor who-can /etc/shadow
+janitor -j who-can /etc/shadow | jq '.write'
+.EE
+.RE
+.SS acl
+.PP
+.RS
+.EX
+sudo janitor acl grant  /srv/project -u alice -rw -R
+sudo janitor acl grant  /srv/project -g devs  -rwx -d
+sudo janitor acl revoke /srv/project -u alice
+sudo janitor acl show   /srv/project
+sudo janitor acl strip  /srv/project -R
+.EE
+.RE
+.SS tree
+.PP
+.RS
+.EX
+janitor tree /srv/project
+janitor tree /srv/project -L 3
+janitor tree /srv/project -U alice
+janitor tree /srv/project -A
+janitor tree /srv/project -H /srv/project/secret.txt
+janitor tree /srv/project -P
+.EE
+.RE
+.SS preset
+.PP
+.RS
+.EX
+sudo janitor preset private       ~/.gnupg -R
+sudo janitor preset private-dir   ~/.config
+sudo janitor preset private-file  ~/.netrc
+sudo janitor preset group-shared  /srv/team  -R
+sudo janitor preset group-read    /srv/docs  -R
+sudo janitor preset public-read   /srv/www   -R
+sudo janitor preset public-file   /var/www/index.html
+sudo janitor preset sticky-dir    /srv/tmp
+sudo janitor preset setgid-dir    /srv/project -R
+sudo janitor preset secret        /etc/secret.key
+sudo janitor preset secret-dir    /root/secrets
+sudo janitor preset exec-only     /srv/drop
+sudo janitor preset ssh-key       ~/.ssh/id_ed25519
+sudo janitor preset ssh-dir       ~/.ssh
+sudo janitor preset config        /etc/myapp.conf
+sudo janitor preset log-file      /var/log/myapp.log
+sudo janitor preset systemd-unit  /etc/systemd/system/myapp.service
+sudo janitor preset read-only     /srv/release.tar.gz
+sudo janitor preset no-access     /srv/quarantine -R
+janitor presets
+.EE
+.RE
+.SS copy-perms
+.PP
+.RS
+.EX
+sudo janitor copy-perms /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
+sudo janitor copy-perms /srv/template        /srv/new -R
+sudo janitor copy-perms /srv/template        /srv/new -R -A
+.EE
+.RE
+.SS Snapshots, history, undo, restore
+.PP
+.RS
+.EX
+sudo janitor backup /srv/project -R -A
+sudo janitor list-backups
+sudo janitor list-backups -p /srv/project
+sudo janitor history      /srv/project
+sudo janitor -j history   /srv/project | jq
+sudo janitor diff     <id>
+sudo janitor export   <id>
+sudo janitor -j export <id>
+sudo janitor restore  <id>
+sudo janitor undo
+sudo janitor prune-backups -k 20
+.EE
+.RE
+.SS Shell completions
+.PP
+.RS
+.EX
+janitor completions bash       | sudo tee /etc/bash_completion.d/janitor
+janitor completions zsh        > ~/.zsh/completions/_janitor
+janitor completions fish       > ~/.config/fish/completions/janitor.fish
+janitor completions powershell > janitor.ps1
+janitor completions elvish     > janitor.elv
+.EE
+.RE
+.SH PERMISSION MODEL
+For a file
+.I /a/b/c/target
+a grant walks the chain
+.IR /a ", " /a/b ", " /a/b/c ", " /a/b/c/target .
+For every ancestor directory, the group is set to the managed group and the
+group-triad mode bits become exactly
+.B \-\-x
+(numerically: group-mode bits 1). Siblings in each ancestor are not touched;
+they stay invisible to users who are only members of the managed group.
+.PP
+On the target itself, the requested bits are OR-ed into the group triad and
+the group is set to the managed group.
+.PP
+Granting access to a world-readable target (o+r set) emits a warning,
+because in that state the grant is purely advisory: every user on the box
+could already read the file.
+.SS find
+.B janitor find
+.I PATH
+[\fB\-m\fR \fIOCTAL\fR] [\fB\-W\fR] [\fB\-r\fR] [\fB\-x\fR] [\fB\-s\fR] [\fB\-S\fR] [\fB\-t\fR] [\fB\-o\fR \fIUSER\fR] [\fB\-g\fR \fIGROUP\fR] [\fB\-A\fR] [\fB\-E\fR \fIGLOB\fR] [\fB\-0\fR]
+.PP
+Read-only permission-aware search. Prints one path per line, or NUL-separated with
+\fB\-0\fR. Pipes cleanly into \fBjanitor chmod \-\-stdin0\fR.
+.SS explain
+.B janitor explain
+.I PATH
+[\fB\-U\fR \fIUSER\fR]
+.PP
+Human-readable verdict on whether USER can read / write / execute PATH.
+Walks the full parent chain, checks traversal bits, group membership, and
+ownership, and prints a single summary line plus annotated per-ancestor table.
+Alias: \fBe\fR.
+.SS compare
+.B janitor compare
+.I A
+.I B
+[\fB\-R\fR]
+.PP
+Side-by-side diff of mode, owner, group, and ACL between A and B. With \-R
+both trees are walked and any entry that differs is printed. Exit 0 when
+identical, 1 when differences are found \- CI-friendly.
+.SS lock / unlock / locks
+.B janitor lock
+.I PATH
+[\fB\-r\fR \fIREASON\fR]
+.PP
+Mark PATH (and every descendant if PATH is a directory) as locked. Any
+subsequent janitor mutation targeting a locked path fails with a clear error
+referencing REASON. Locks persist across invocations in the backup directory.
+\fBjanitor unlock\fR removes a lock; \fBjanitor locks\fR prints all active locks.
+.SS policy
+.B janitor policy apply
+.I FILE
+| \fBjanitor policy verify\fR \fIFILE\fR
+.PP
+Declarative YAML policy. The file shape is:
+.EX
+rules:
+  \- path: /etc/myapp.conf
+    mode: "0640"
+    owner: root
+    group: myapp
+  \- path: /srv/app
+    recursive: true
+    preset: group-shared
+    exclude: ["*.pyc", ".git"]
+.EE
+\fBapply\fR mutates the filesystem under one snapshot. \fBverify\fR prints drift
+and exits 1 if anything differs.
+.SS batch
+.B janitor batch
+.I FILE
+.PP
+Run many permission ops in one transaction (one snapshot, one undo). Each line
+of FILE is \fBchmod MODE PATH\fR, \fBchown SPEC PATH\fR, or \fBpreset NAME PATH\fR.
+Blank lines and lines beginning with \fB#\fR are ignored. Use \fB\-\fR for stdin.
+.SS attr
+.B janitor attr show|set-immutable|clear-immutable|set-append-only|clear-append-only
+.I PATH
+.PP
+Thin wrapper around \fBchattr\fR(1) / \fBlsattr\fR(1). Refuses to run on locked
+paths. Requires \fBe2fsprogs\fR to be installed.
+.SH RELATIONSHIP TO COREUTILS
+\fBjanitor chmod\fR and \fBjanitor chown\fR accept the exact same argument
+syntax as the coreutils tools (octal, symbolic, \-R, \-\-reference). Every
+invocation additionally records the prior state into a MessagePack snapshot,
+so \fBjanitor undo\fR reverts the whole call. The behavior is a strict superset:
+existing scripts work unchanged. Snapshots accumulate in the backup directory;
+run \fBjanitor prune-backups \-\-keep N\fR periodically when using janitor for
+high-volume scripted operations.
+.SH FILES
+.TP
+.I /var/lib/janitor/backups/
+Snapshot directory when run as root (mode 0700, root:root).
+.TP
+.I ~/.local/share/janitor/backups/
+Snapshot directory when run as a normal user.
+.TP
+.I <backup-dir>/.janitor.lock
+Advisory
+.BR flock (2)
+preventing concurrent mutations in the same directory.
+.TP
+.I <backup-dir>/<id>.mpk
+One MessagePack file per backup.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+Any error (bad input, permission denied, I/O error, snapshot invalid).
+.TP
+.B 130
+Interrupted by SIGINT (Ctrl-C) during a long operation. Partial state is
+possible; run
+.B janitor list-backups
+and
+.B janitor restore
+to recover.
+.SH ENVIRONMENT
+.TP
+.B XDG_DATA_HOME
+Non-root backup directory root (defaults to
+.IR ~/.local/share ).
+.TP
+.B NO_COLOR
+If set, disables colored tree output (same as
+.BR "\-c never" ).
+.SH SEE ALSO
+.BR chmod (1),
+.BR chown (1),
+.BR setfacl (1),
+.BR getfacl (1),
+.BR stat (1),
+.BR find (1),
+.BR namei (1),
+.BR groupadd (8),
+.BR gpasswd (1).
+.SH AUTHORS
+janitor is maintained by Tristram1337 at
+.UR https://github.com/Tristram1337/janitor
+.UE .
+.SH BUGS
+Report issues at
+.UR https://github.com/Tristram1337/janitor/issues
+.UE .

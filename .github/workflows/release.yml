@@ -1,0 +1,166 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: build ${{ matrix.artifact_name }}
+    # ubuntu-22.04 provides glibc 2.35, so resulting .deb / .tar.gz binaries
+    # run on Debian 12 (glibc 2.36), Ubuntu 22.04+, RHEL 9+, and newer.
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            artifact_name: linux-amd64
+            use_cross: false
+            build_deb: true
+            build_rpm: true
+          - target: aarch64-unknown-linux-gnu
+            artifact_name: linux-arm64
+            use_cross: true
+            build_deb: true
+            build_rpm: true
+          - target: x86_64-unknown-linux-musl
+            artifact_name: linux-amd64-static
+            use_cross: true
+            build_deb: false
+            build_rpm: false
+          - target: aarch64-unknown-linux-musl
+            artifact_name: linux-arm64-static
+            use_cross: true
+            build_deb: false
+            build_rpm: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Include runner OS so cache from newer-glibc runners is not
+          # restored onto ubuntu-22.04 (would break `cargo-deb` / `cross`
+          # binaries linked against glibc 2.39).
+          key: ${{ runner.os }}-${{ matrix.target }}
+          cache-bin: false
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --locked --version 0.2.5
+
+      - name: Build (cargo)
+        if: ${{ !matrix.use_cross }}
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.use_cross
+        run: cross build --release --target ${{ matrix.target }}
+
+      - name: Stage binary for packaging tools
+        run: |
+          mkdir -p target/release
+          cp "target/${{ matrix.target }}/release/janitor" target/release/janitor
+
+      - name: Package tarball
+        id: tarball
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          DIST="janitor-${VERSION}-${{ matrix.artifact_name }}"
+          mkdir -p "dist/$DIST"
+          cp "target/${{ matrix.target }}/release/janitor" "dist/$DIST/"
+          cp README.md LICENSE CHANGELOG.md "dist/$DIST/"
+          cp docs/janitor.1 "dist/$DIST/"
+          tar -C dist -czf "dist/$DIST.tar.gz" "$DIST"
+          ( cd dist && sha256sum "$DIST.tar.gz" > "$DIST.tar.gz.sha256" )
+
+      - name: Install cargo-deb
+        if: matrix.build_deb
+        # cargo-deb prebuilt releases are linked against a newer glibc than
+        # ubuntu-22.04 provides; compile from source instead. `cache-bin:
+        # false` above means this is re-done on each run, which is fine.
+        run: cargo install cargo-deb --locked
+
+      - name: Build .deb
+        if: matrix.build_deb
+        run: |
+          set -euo pipefail
+          cargo deb --no-build --no-strip --target ${{ matrix.target }} --output dist/
+          ( cd dist && for f in *.deb; do sha256sum "$f" > "$f.sha256"; done )
+
+      - name: Install cargo-generate-rpm
+        if: matrix.build_rpm
+        # A transitive dep of cargo-generate-rpm (num-bigint-dig 0.8.4, via
+        # the `rsa` crate used for RPM signing) currently emits a future-
+        # incompat warning. It's upstream, not in janitor's own deps, and
+        # does not affect the built binary. Tracking:
+        #   https://github.com/RustCrypto/RSA/issues (rsa -> num-bigint-dig 0.9)
+        run: cargo install cargo-generate-rpm --locked
+
+      - name: Build .rpm
+        if: matrix.build_rpm
+        run: |
+          set -euo pipefail
+          cargo generate-rpm --target ${{ matrix.target }} --output dist/
+          ( cd dist && for f in *.rpm; do sha256sum "$f" > "$f.sha256"; done )
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: janitor-${{ matrix.artifact_name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.deb
+            dist/*.deb.sha256
+            dist/*.rpm
+            dist/*.rpm.sha256
+
+  release:
+    name: publish release
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Aggregate SHA256SUMS
+        run: |
+          set -euo pipefail
+          cd artifacts
+          : > SHA256SUMS
+          for f in *.tar.gz *.deb *.rpm; do
+            [ -f "$f" ] || continue
+            sha256sum "$f" >> SHA256SUMS
+          done
+          cat SHA256SUMS
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/*.tar.gz
+            artifacts/*.deb
+            artifacts/*.rpm
+            artifacts/SHA256SUMS
+          generate_release_notes: true
+          body_path: CHANGELOG.md

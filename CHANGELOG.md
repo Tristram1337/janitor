@@ -1,0 +1,46 @@
+# Changelog
+
+All notable changes to `janitor` are documented in this file.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+
+## [0.1.0] - 2026-04-21
+
+First public pre-release. API and CLI surface may still change before 1.0.0.
+
+### Added
+- `grant` / `revoke`: hierarchical permission management with automatic managed-group creation.
+- `restore` / `list-backups` / `prune-backups` / `backup` / `diff` / `export`: full snapshot lifecycle.
+- `chmod` (octal + symbolic) and `chown` (`user`, `user:group`, `:group`, `user:`, numeric) with auto-snapshot. `chmod` supports the full 4-digit octal range (setuid `4xxx`, setgid `2xxx`, sticky `1xxx`, combined `6xxx`/`7xxx`) and all symbolic `[ugoa][+-=][rwxXst]` clauses. Both commands accept `-F` / `--reference FILE` to copy the mode or owner from another path.
+- `info` (alias `i`): one-shot summary of a path — type, owner (name + uid), group, mode (octal + symbolic, showing setuid/setgid/sticky), size, mtime, symlink target, ACLs, and optional effective `rwx` access for a user via `-U`.
+- `undo` (alias `u`): one-shot restore of the most recent backup — an editor-style undo for any `grant` / `chmod` / `chown` / `acl` operation.
+- `history` (alias `h`): list every backup whose target contains `PATH`, newest first, with optional `--json` for scripting.
+- `copy-perms` (alias `cp`): atomically copy mode + owner + group (and optionally ACLs via `-A`) from `SRC` to `DST`, snapshotting `DST` first. `-R` walks recursively.
+- `list-backups -p SUBSTR`: filter saved snapshots by target path.
+- `acl grant|revoke|show|strip`: POSIX ACL management, including default ACLs and recursive application.
+- `audit` with filters: world-writable (`-W`), world-readable (`-r`), world-executable (`-x`), setuid (`-s`), setgid (`-S`), sticky (`-t`), owner (`-o`), group (`-g`), mode (`-m`), has-acl (`-A`), `--no-owner`, `--no-group`.
+- `find-orphans`: files with unresolvable UID or GID.
+- `who-can`: reverse access query (parent-chain aware, honors group memberships).
+- `tree` with per-user colorization, highlighting, parent chain, depth limit, and ACL marker.
+- `preset` and `presets`: 19 named mode presets (`private`, `private-dir`, `private-file`, `group-shared`, `group-read`, `public-read`, `public-file`, `sticky-dir`, `setgid-dir`, `secret`, `secret-dir`, `exec-only`, `ssh-key`, `ssh-dir`, `config`, `log-file`, `systemd-unit`, `read-only`, `no-access`).
+- `completions`: bash, zsh, fish, PowerShell, elvish.
+- Positional `PATH` argument on every subcommand, matching `chmod(1)` / `chown(1)` conventions.
+- Single-letter flags for every common option: `-n` (dry-run), `-j` (json), `-q` (quiet), `-u` (user), `-g` (group), `-a` (access string), `-r` / `-w` / `-x` (access bits, combinable in any order), `-R` (recursive), `-L` (max-level / max-depth), `-d` (default ACL), `-k` (keep), `-W` (world-writable), `-s` (setuid), `-S` (setgid), `-t` (sticky), `-o` (owner), `-m` (mode), `-A` (has-acl / capture-acl / acl marker), `-H` (highlight), `-P` (show-parents), `-U` (for-user), `-c` (color).
+- Subcommand aliases: `g`, `rv`, `t`, `b`, `r`, `ls`, `prune`, `a`, `w`, `p`.
+- Debian (`.deb`) and Red Hat (`.rpm`) packages for amd64 and arm64, plus portable and static (musl) tarballs. Dynamic builds link against glibc 2.35 and run on Debian 12+, Ubuntu 22.04+, and RHEL 9+; static tarballs cover Alpine, Debian 11, and minimal containers.
+- Man page `janitor(1)` with workflows and examples.
+- `chmod` / `chown` / `preset` accept **multiple `PATH`s** in one call (single snapshot). Paths can also be streamed via `--from-file FILE` (newline-separated) or `--stdin0` (NUL-separated, pairs with `find -print0` / `janitor find -0`). `-E` / `--exclude GLOB` (repeatable) skips paths by full-path or basename match.
+- `audit`: new `-E` / `--exclude GLOB` filter and `--fix ACTION` (one-shot remediation). Supported actions: `chmod MODE`, `chown SPEC`, `preset NAME`, `strip-world-write`, `strip-setuid`, `strip-setgid`, `strip-sticky`. All matches mutate under a single backup.
+- `find`: read-only permission-aware search (like coreutils `find`, but focused on mode bits, ownership, ACLs). `-0` NUL-separates output for piping into `janitor chmod --stdin0`.
+- `explain` (alias `e`): human-readable read/write/exec verdict for a path, walking the parent chain and evaluating mode bits, group membership, and traversal bits, optionally `-U USER`.
+- `compare A B`: side-by-side diff of mode / owner / group / ACL. Exit 1 on drift (CI-friendly). `-R` walks both trees.
+- `lock PATH [-r REASON]` / `unlock PATH` / `locks`: persistent per-path mutation guard. Any janitor mutation targeting a locked path or a descendant of a locked directory fails with a clear error.
+- `policy apply FILE` / `policy verify FILE`: declarative YAML policy (`path`, `mode`, `owner`, `group`, `preset`, `recursive`, `exclude`). `verify` exits 1 on drift.
+- `batch FILE`: run many `chmod` / `chown` / `preset` operations in one transaction; `-` reads from stdin.
+- `attr show|set-immutable|clear-immutable|set-append-only|clear-append-only`: thin wrapper around `chattr` / `lsattr` that refuses to run on locked paths.
+- `history --since DUR`: filter backups by age (`30m`, `1h`, `2d`, `1w`).
+- `copy-perms -E`: honors the same exclude filter as the other mass operations.
+- Panic hook, SIGINT handler, advisory file lock, `0700` backup directory, world-readable-target warning.
+
+[0.1.0]: https://github.com/Tristram1337/janitor/releases/tag/v0.1.0
