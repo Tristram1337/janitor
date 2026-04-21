@@ -1,4 +1,9 @@
 //! `tree`: colored permission tree with per-user access highlighting.
+//!
+//! Variant A (Classic+): evolves the `tree(1)` layout with two-space
+//! column gutters, ACL/setuid badges, an ACL-aware `-U` access lens, and
+//! a summary line with category counts (`dirs · files · setuid · sticky
+//! · acl · denied`).
 
 use std::collections::HashSet;
 use std::fs;
@@ -8,109 +13,26 @@ use std::path::{Path, PathBuf};
 use nix::unistd::{Gid, Uid};
 
 use crate::acl::has_extended_acl;
+use crate::access::effective_for_user_path;
 use crate::cli::ColorMode;
 use crate::errors::Result;
 use crate::helpers::{path_chain, resolve_path};
-use crate::users::{gid_to_name, lookup_user, uid_to_name, user_gids};
+use crate::render::{self, badge, glyphs, paint, summary_line, Style};
+use crate::users::{gid_to_name, uid_to_name};
 
-// ── Color palette ──────────────────────────────────────────────────────
+// ── Flags / counters ───────────────────────────────────────────────────
 
-struct Palette {
-    reset: &'static str,
-    dim: &'static str,
-    acc: &'static str,  // green: user has access
-    trav: &'static str, // cyan: traverse only
-    deny: &'static str, // dim red: no access
-    hl: &'static str,   // bold yellow: managed chain highlight
-    dir: &'static str,  // bold blue: default directory
-    link: &'static str, // magenta: symlinks
-    sep: &'static str,
-}
-
-const PAL_ON: Palette = Palette {
-    reset: "\x1b[0m",
-    dim: "\x1b[2m",
-    acc: "\x1b[32m",
-    trav: "\x1b[36m",
-    deny: "\x1b[2;31m",
-    hl: "\x1b[1;33m",
-    dir: "\x1b[1;34m",
-    link: "\x1b[35m",
-    sep: "\x1b[2m",
-};
-
-const PAL_OFF: Palette = Palette {
-    reset: "",
-    dim: "",
-    acc: "",
-    trav: "",
-    deny: "",
-    hl: "",
-    dir: "",
-    link: "",
-    sep: "",
-};
-
-fn should_color(mode: ColorMode) -> bool {
-    match mode {
-        ColorMode::Always => true,
-        ColorMode::Never => false,
-        ColorMode::Auto => {
-            // auto: only if stdout is a terminal and TERM isn't dumb
-            atty_check() && std::env::var("TERM").map(|t| t != "dumb").unwrap_or(true)
-        }
-    }
-}
-
-fn atty_check() -> bool {
-    unsafe { libc::isatty(libc::STDOUT_FILENO) != 0 }
-}
-
-// ── User context for --for-user ────────────────────────────────────────
-
-#[allow(dead_code)]
-struct UserCtx {
-    name: String,
-    uid: u32,
-    gids: HashSet<u32>,
-}
-
-fn build_user_ctx(username: &str) -> Result<UserCtx> {
-    let u = lookup_user(username)?;
-    let gids: HashSet<u32> = user_gids(username)?
-        .into_iter()
-        .map(|g| g.as_raw())
-        .collect();
-    Ok(UserCtx {
-        name: username.to_string(),
-        uid: u.uid.as_raw(),
-        gids,
-    })
-}
-
-/// (read, write, execute) for a user context on a specific inode.
-fn effective_local(md: &fs::Metadata, ctx: &UserCtx) -> (bool, bool, bool) {
-    let mode = md.mode() & 0o7777;
-    if ctx.uid == 0 {
-        let is_dir = md.is_dir();
-        return (true, true, is_dir || (mode & 0o111 != 0));
-    }
-    let triad = if ctx.uid == md.uid() {
-        (mode >> 6) & 0o7
-    } else if ctx.gids.contains(&md.gid()) {
-        (mode >> 3) & 0o7
-    } else {
-        mode & 0o7
-    };
-    (triad & 0o4 != 0, triad & 0o2 != 0, triad & 0o1 != 0)
-}
-
-// ── Counts ─────────────────────────────────────────────────────────────
-
+#[derive(Default)]
 struct Counts {
     dirs: usize,
     files: usize,
     denied: usize,
+    setuid: usize,
+    setgid: usize,
+    sticky: usize,
+    world_write: usize,
+    acl: usize,
+    orphan: usize,
 }
 
 // ── Public entry point ─────────────────────────────────────────────────
@@ -125,10 +47,11 @@ pub fn cmd_tree(
     show_acl: bool,
 ) -> Result<()> {
     let root = resolve_path(path)?;
-    let use_color = should_color(color_mode);
-    let pal = if use_color { &PAL_ON } else { &PAL_OFF };
+    // Re-initialize shared color state for this command: --color wins over
+    // the global auto-detection that main() already performed.
+    render::init_color(color_mode);
 
-    // Highlight set: all segments from / to the highlighted path.
+    // Highlight chain (top-down path from / to highlighted node).
     let highlight_set: HashSet<PathBuf> = match highlight {
         Some(h) => {
             let hp = resolve_path(h)?;
@@ -137,36 +60,21 @@ pub fn cmd_tree(
         None => HashSet::new(),
     };
 
-    let user_ctx = match for_user {
-        Some(u) => Some(build_user_ctx(u)?),
-        None => None,
-    };
+    let mut counts = Counts::default();
 
-    let mut counts = Counts {
-        dirs: 0,
-        files: 0,
-        denied: 0,
-    };
-
-    // Show parents above root if requested.
+    // Parent-chain banner above the root.
     if show_parents {
         let parents = path_chain(&root, Path::new("/"));
-        // All segments except the last (which is root itself).
         for p in &parents[..parents.len().saturating_sub(1)] {
-            print_line(
-                p,
-                "",
-                &p.display().to_string(),
-                pal,
-                &highlight_set,
-                user_ctx.as_ref(),
-                true,
-                true,
-                show_acl,
+            let arrow = paint(Style::Separator, "↑");
+            println!(
+                "{}  {}",
+                arrow,
+                paint(Style::Label, &p.display().to_string())
             );
         }
         if parents.len() > 1 {
-            println!("{}{}{}", pal.sep, "─".repeat(60), pal.reset);
+            println!("{}", render::rule(60));
         }
     }
 
@@ -177,14 +85,15 @@ pub fn cmd_tree(
         true,
         0,
         max_depth,
-        pal,
         &highlight_set,
-        user_ctx.as_ref(),
+        for_user,
         true,
         &mut counts,
         show_acl,
     );
 
+    // ── Summary (stderr? no — stay on stdout for tree; this one is the
+    // visual end of the render, not an operation report) ─────────────
     println!();
     let dir_word = if counts.dirs == 1 {
         "directory"
@@ -192,29 +101,44 @@ pub fn cmd_tree(
         "directories"
     };
     let file_word = if counts.files == 1 { "file" } else { "files" };
-    print!("{} {dir_word}, {} {file_word}", counts.dirs, counts.files);
-    if counts.denied > 0 {
-        print!(", {} unreadable", counts.denied);
-    }
-    println!();
+    let dirs = counts.dirs.to_string();
+    let files = counts.files.to_string();
+    let setuid = counts.setuid.to_string();
+    let setgid = counts.setgid.to_string();
+    let sticky = counts.sticky.to_string();
+    let ww = counts.world_write.to_string();
+    let acl = counts.acl.to_string();
+    let den = counts.denied.to_string();
+    let orp = counts.orphan.to_string();
+    let segs: Vec<(&str, &str)> = vec![
+        (dirs.as_str(), dir_word),
+        (files.as_str(), file_word),
+        (if counts.setuid > 0 { setuid.as_str() } else { "" }, "setuid"),
+        (if counts.setgid > 0 { setgid.as_str() } else { "" }, "setgid"),
+        (if counts.sticky > 0 { sticky.as_str() } else { "" }, "sticky"),
+        (if counts.world_write > 0 { ww.as_str() } else { "" }, "world-writable"),
+        (if counts.acl > 0 { acl.as_str() } else { "" }, "acl"),
+        (if counts.orphan > 0 { orp.as_str() } else { "" }, "orphan"),
+        (if counts.denied > 0 { den.as_str() } else { "" }, "unreadable"),
+    ];
+    println!("{}", summary_line(&segs));
 
-    if user_ctx.is_some() && use_color {
+    // Legend (only in TTY with colors on).
+    if for_user.is_some() && render::colors_on() {
         println!();
+        let u = for_user.unwrap();
         println!(
-            "  {}■{} readable by {}   {}■{} traverse-only (can pass, can't list)   {}■{} no access",
-            pal.acc,
-            pal.reset,
-            for_user.unwrap(),
-            pal.trav,
-            pal.reset,
-            pal.deny,
-            pal.reset,
+            "  {} readable by {}    {} traverse-only    {} no access",
+            paint(Style::Ok, "●"),
+            paint(Style::User, u),
+            paint(Style::Traverse, "●"),
+            paint(Style::Deny, "●"),
         );
     }
-    if !highlight_set.is_empty() && use_color {
+    if !highlight_set.is_empty() && render::colors_on() {
         println!(
-            "  {}■{} managed-chain highlight (grant path)",
-            pal.hl, pal.reset,
+            "  {} highlight chain",
+            paint(Style::Highlight, glyphs().bullet_filled)
         );
     }
 
@@ -230,66 +154,43 @@ fn walk_tree(
     is_last: bool,
     depth: usize,
     max_depth: Option<usize>,
-    pal: &Palette,
     highlight_set: &HashSet<PathBuf>,
-    user_ctx: Option<&UserCtx>,
+    for_user: Option<&str>,
     parent_reachable: bool,
     counts: &mut Counts,
     show_acl: bool,
 ) {
+    let g = glyphs();
     let connector = if is_root {
         ""
     } else if is_last {
-        "└── "
+        g.tree_last
     } else {
-        "├── "
-    };
-    let name = if is_root {
-        path.display().to_string()
-    } else {
-        path.file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string())
+        g.tree_mid
     };
 
-    let full_prefix = format!("{prefix}{connector}");
-    let self_reachable = print_line(
+    let full_prefix = format!("{prefix}{}", paint(Style::Separator, connector));
+
+    let (self_reachable, child_md) = print_line(
         path,
         &full_prefix,
-        &name,
-        pal,
+        is_root,
         highlight_set,
-        user_ctx,
+        for_user,
         parent_reachable,
-        false,
+        counts,
         show_acl,
     );
 
-    // Update counts.
-    match fs::symlink_metadata(path) {
-        Ok(md) => {
-            if md.is_dir() && !md.file_type().is_symlink() {
-                counts.dirs += 1;
-            } else {
-                counts.files += 1;
-            }
-        }
-        Err(_) => {
-            counts.denied += 1;
-            return;
-        }
-    }
-
-    // Recurse into dirs.
     if let Some(max) = max_depth {
         if depth >= max {
             return;
         }
     }
 
-    let md = match fs::symlink_metadata(path) {
-        Ok(m) => m,
-        Err(_) => return,
+    let md = match child_md {
+        Some(m) => m,
+        None => return,
     };
     if md.file_type().is_symlink() || !md.is_dir() {
         return;
@@ -305,11 +206,12 @@ fn walk_tree(
             let child_prefix = if is_last || is_root {
                 format!("{prefix}    ")
             } else {
-                format!("{prefix}│   ")
+                format!("{prefix}{}", paint(Style::Separator, g.tree_vert))
             };
             println!(
-                "{}{}└── <permission denied>{}",
-                child_prefix, pal.dim, pal.reset
+                "{child_prefix}{}{}",
+                paint(Style::Separator, g.tree_last),
+                paint(Style::Label, "<permission denied>")
             );
             counts.denied += 1;
             return;
@@ -321,7 +223,7 @@ fn walk_tree(
     } else if is_last {
         format!("{prefix}    ")
     } else {
-        format!("{prefix}│   ")
+        format!("{prefix}{}", paint(Style::Separator, g.tree_vert))
     };
 
     for (i, child) in children.iter().enumerate() {
@@ -332,9 +234,8 @@ fn walk_tree(
             i == children.len() - 1,
             depth + 1,
             max_depth,
-            pal,
             highlight_set,
-            user_ctx,
+            for_user,
             self_reachable,
             counts,
             show_acl,
@@ -344,66 +245,148 @@ fn walk_tree(
 
 // ── Single-line rendering ──────────────────────────────────────────────
 
-/// Print one entry line. Returns whether this node is reachable for the
-/// user context (so children can propagate reachability).
+/// Render one entry. Returns (node_reachable_for_for_user, Metadata).
 fn print_line(
     path: &Path,
     prefix: &str,
-    name: &str,
-    pal: &Palette,
+    is_root: bool,
     highlight_set: &HashSet<PathBuf>,
-    user_ctx: Option<&UserCtx>,
+    for_user: Option<&str>,
     parent_reachable: bool,
-    is_parent_view: bool,
+    counts: &mut Counts,
     show_acl: bool,
-) -> bool {
+) -> (bool, Option<fs::Metadata>) {
     let md = match fs::symlink_metadata(path) {
         Ok(m) => m,
         Err(e) => {
-            println!("{prefix}{}{name}  <{e}>{}", pal.dim, pal.reset);
-            return false;
+            println!(
+                "{prefix}{}",
+                paint(Style::Label, &format!("{}  <{e}>", path.display()))
+            );
+            counts.denied += 1;
+            return (false, None);
         }
     };
 
-    let mode_str = filemode(md.mode());
-    let owner = uid_to_name(Uid::from_raw(md.uid()));
-    let group = gid_to_name(Gid::from_raw(md.gid()));
+    let mode = md.mode() & 0o7777;
+    let is_dir = md.is_dir() && !md.file_type().is_symlink();
+    let is_symlink = md.file_type().is_symlink();
 
-    // Coloring logic.
-    let mut color = "";
-    let mut reachable = parent_reachable;
-
-    if let Some(ctx) = user_ctx {
-        let (r, _w, x) = effective_local(&md, ctx);
-        let is_dir = md.is_dir() && !md.file_type().is_symlink();
-        if !parent_reachable {
-            color = pal.deny;
-            reachable = false;
-        } else if is_dir {
-            if r && x {
-                color = pal.acc;
-                reachable = true;
-            } else if x && !r {
-                color = pal.trav;
-                reachable = true;
-            } else {
-                color = pal.deny;
-                reachable = false;
-            }
-        } else {
-            // file
-            color = if r { pal.acc } else { pal.deny };
-        }
-    } else if md.is_dir() && !md.file_type().is_symlink() {
-        color = pal.dir;
-    } else if md.file_type().is_symlink() {
-        color = pal.link;
+    // Update counts.
+    if is_dir {
+        counts.dirs += 1;
+    } else {
+        counts.files += 1;
+    }
+    if mode & 0o4000 != 0 {
+        counts.setuid += 1;
+    }
+    if mode & 0o2000 != 0 {
+        counts.setgid += 1;
+    }
+    if mode & 0o1000 != 0 {
+        counts.sticky += 1;
+    }
+    if mode & 0o002 != 0 && !is_symlink && !is_dir {
+        counts.world_write += 1;
+    }
+    let acl_here = has_extended_acl(path);
+    if acl_here {
+        counts.acl += 1;
     }
 
-    // Highlight marker.
+    // Owner / group (+ orphan detection).
+    let (uname, u_orphan) = match nix::unistd::User::from_uid(Uid::from_raw(md.uid())) {
+        Ok(Some(u)) => (u.name, false),
+        _ => (format!("#{}", md.uid()), true),
+    };
+    let (gname, g_orphan) = match nix::unistd::Group::from_gid(Gid::from_raw(md.gid())) {
+        Ok(Some(g)) => (g.name, false),
+        _ => (format!("#{}", md.gid()), true),
+    };
+    if u_orphan || g_orphan {
+        counts.orphan += 1;
+    }
+    let _ = (uid_to_name, gid_to_name);
+
+    // Access-lens coloring for -U.
+    let mut self_reachable = parent_reachable;
+    let lens = for_user.map(|user| {
+        let d = effective_for_user_path(path, user)
+            .unwrap_or_else(|_| crate::access::AccessDecision {
+                read: false,
+                write: false,
+                exec: false,
+                reason: "error".into(),
+            });
+        if !parent_reachable {
+            self_reachable = false;
+            Style::Deny
+        } else if is_dir {
+            if d.read && d.exec {
+                self_reachable = true;
+                Style::Ok
+            } else if d.exec && !d.read {
+                self_reachable = true;
+                Style::Traverse
+            } else {
+                self_reachable = false;
+                Style::Deny
+            }
+        } else if d.read {
+            Style::Ok
+        } else {
+            Style::Deny
+        }
+    });
+
+    // Mode string.
+    let mode_str = render::mode_symbolic_colored(mode, is_dir, is_symlink);
+
+    // Owner : group.
+    let user_style = if u_orphan { Style::Danger } else { Style::User };
+    let group_style = if g_orphan { Style::Danger } else { Style::Group };
+    let owner = format!(
+        "{}{}{}",
+        paint(user_style, &uname),
+        paint(Style::Separator, ":"),
+        paint(group_style, &gname)
+    );
+
+    // Name (basename for non-root, full path for root).
+    let name_raw = if is_root {
+        path.display().to_string()
+    } else {
+        path.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| path.display().to_string())
+    };
+    let name_style = match lens {
+        Some(s) => s,
+        None => {
+            if is_symlink {
+                Style::Link
+            } else if is_dir {
+                Style::Dir
+            } else {
+                Style::Primary
+            }
+        }
+    };
+    let mut name = paint(name_style, &name_raw);
+    if is_symlink {
+        if let Ok(tgt) = fs::read_link(path) {
+            name.push(' ');
+            name.push_str(&paint(Style::Separator, glyphs().arrow_right));
+            name.push(' ');
+            name.push_str(&paint(Style::Label, &tgt.display().to_string()));
+        }
+    }
+
+    // Highlight chain marker.
     let marker = if !highlight_set.is_empty() {
         if highlight_set.contains(path) {
-            format!("{}●{} ", pal.hl, pal.reset)
+            format!("{} ", paint(Style::Highlight, glyphs().bullet_filled))
         } else {
             "  ".to_string()
         }
@@ -411,99 +394,42 @@ fn print_line(
         String::new()
     };
 
-    let parent_prefix = if is_parent_view { "↑ " } else { "" };
-    let acl_mark = if show_acl && has_extended_acl(path) {
-        "+"
+    // Badges (setuid/setgid/sticky/world-writable/acl/orphan).
+    let mut badges: Vec<String> = Vec::new();
+    if mode & 0o4000 != 0 {
+        badges.push(badge("setuid", Style::WarnMajor));
+    }
+    if mode & 0o2000 != 0 {
+        badges.push(badge("setgid", Style::WarnMajor));
+    }
+    if mode & 0o1000 != 0 {
+        badges.push(badge("sticky", Style::WarnMajor));
+    }
+    if mode & 0o002 != 0 && !is_symlink && !is_dir {
+        badges.push(badge("world-writable", Style::Danger));
+    }
+    if show_acl && acl_here {
+        badges.push(badge("acl", Style::AclMarker));
+    }
+    if u_orphan || g_orphan {
+        badges.push(badge("orphan", Style::Danger));
+    }
+    let badges_str = if badges.is_empty() {
+        String::new()
     } else {
-        " "
+        format!("  {}", badges.join(" "))
     };
 
+    // Final line.
     println!(
-        "{prefix}{marker}{parent_prefix}{}{mode_str}{acl_mark}{}  {owner}:{group}  {color}{name}{}",
-        pal.dim, pal.reset, pal.reset,
+        "{prefix}{marker}{mode_str}  {owner}  {name}{badges_str}"
     );
 
-    reachable
-}
-
-/// Convert mode bits to a string like `drwxr-x---` (mimics Python's stat.filemode).
-fn filemode(mode: u32) -> String {
-    let file_type = match mode & 0o170000 {
-        0o140000 => 's', // socket
-        0o120000 => 'l', // symlink
-        0o100000 => '-', // regular
-        0o060000 => 'b', // block device
-        0o040000 => 'd', // directory
-        0o020000 => 'c', // char device
-        0o010000 => 'p', // FIFO
-        _ => '?',
-    };
-    let mut s = String::with_capacity(10);
-    s.push(file_type);
-    // owner
-    s.push(if mode & 0o400 != 0 { 'r' } else { '-' });
-    s.push(if mode & 0o200 != 0 { 'w' } else { '-' });
-    s.push(if mode & 0o4000 != 0 {
-        if mode & 0o100 != 0 {
-            's'
-        } else {
-            'S'
-        }
-    } else {
-        if mode & 0o100 != 0 {
-            'x'
-        } else {
-            '-'
-        }
-    });
-    // group
-    s.push(if mode & 0o040 != 0 { 'r' } else { '-' });
-    s.push(if mode & 0o020 != 0 { 'w' } else { '-' });
-    s.push(if mode & 0o2000 != 0 {
-        if mode & 0o010 != 0 {
-            's'
-        } else {
-            'S'
-        }
-    } else {
-        if mode & 0o010 != 0 {
-            'x'
-        } else {
-            '-'
-        }
-    });
-    // other
-    s.push(if mode & 0o004 != 0 { 'r' } else { '-' });
-    s.push(if mode & 0o002 != 0 { 'w' } else { '-' });
-    s.push(if mode & 0o1000 != 0 {
-        if mode & 0o001 != 0 {
-            't'
-        } else {
-            'T'
-        }
-    } else {
-        if mode & 0o001 != 0 {
-            'x'
-        } else {
-            '-'
-        }
-    });
-    s
+    (self_reachable, Some(md))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn test_filemode() {
-        // drwxr-x--- = 0o40750
-        assert_eq!(filemode(0o40750), "drwxr-x---");
-        // -rw-r----- = 0o100640
-        assert_eq!(filemode(0o100640), "-rw-r-----");
-        // -rwxrwxrwx = 0o100777
-        assert_eq!(filemode(0o100777), "-rwxrwxrwx");
-        // drwx--x--- = 0o40710
-        assert_eq!(filemode(0o40710), "drwx--x---");
-    }
+    // The filemode helper is replaced by `render::format_symbolic`; its
+    // tests live in `render`.
 }
