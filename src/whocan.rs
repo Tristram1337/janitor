@@ -1,16 +1,24 @@
-//! `who-can`: reverse query, list users who can {read,write,exec} a path
-//! based on owner/group/other bits plus group memberships.
+//! `who-can`: reverse query — who can read / write / exec this path?
+//!
+//! Variant A: groups each user by the rule that gave them access (owner,
+//! group member, ACL grant, `other` bits), surfaces a warning when the
+//! file is world-readable, and flags users whose file-level ACL grant
+//! is defeated by a parent that blocks traversal.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nix::unistd::{Gid, Uid};
 use serde::Serialize;
 
+use crate::access::effective_for_user_path;
+use crate::acl::has_extended_acl;
 use crate::errors::Result;
 use crate::helpers::{path_chain, resolve_path};
-use crate::users::{gid_to_name, uid_to_name, user_gids};
+use crate::render::{self, glyphs, paint, Style};
+use crate::users::{gid_to_name, uid_to_name};
 
 #[derive(Debug, Serialize)]
 pub struct WhoCanReport {
@@ -21,36 +29,25 @@ pub struct WhoCanReport {
     pub blocked_by: Option<String>,
 }
 
+#[derive(Default)]
+struct Buckets {
+    owner: Vec<String>,
+    group: Vec<String>,
+    other: Vec<String>,
+    acl: Vec<String>,
+    root: bool,
+    cant_traverse: BTreeSet<String>,
+}
+
 pub fn cmd_who_can(path: &str, as_json: bool) -> Result<()> {
     let target = resolve_path(path)?;
-    // Traverse-ability: every parent must be at least o+x or the querying
-    // subject must be covered by the group/owner bits.
-    let chain = path_chain(&target, Path::new("/"));
     let md = fs::symlink_metadata(&target)?;
     let mode = md.mode() & 0o7777;
     let uid = md.uid();
     let gid = md.gid();
 
-    // Collect all known users from /etc/passwd.
-    let users = read_passwd_users();
-
-    let mut r_users = Vec::new();
-    let mut w_users = Vec::new();
-    let mut x_users = Vec::new();
-
-    for u in &users {
-        if user_has_bit(u, &chain, &target, 0o4, uid, gid, mode) {
-            r_users.push(u.name.clone());
-        }
-        if user_has_bit(u, &chain, &target, 0o2, uid, gid, mode) {
-            w_users.push(u.name.clone());
-        }
-        if user_has_bit(u, &chain, &target, 0o1, uid, gid, mode) {
-            x_users.push(u.name.clone());
-        }
-    }
-
-    // Find first parent that blocks traversal for a generic non-priv user.
+    // Blocked-by: first non-root ancestor without `o+x`.
+    let chain = path_chain(&target, Path::new("/"));
     let blocked_by = chain
         .iter()
         .take(chain.len().saturating_sub(1))
@@ -61,40 +58,237 @@ pub fn cmd_who_can(path: &str, as_json: bool) -> Result<()> {
         })
         .map(|p| p.display().to_string());
 
+    let users = read_passwd_users();
+
+    let mut read_bkt = Buckets::default();
+    let mut write_bkt = Buckets::default();
+    let mut exec_bkt = Buckets::default();
+
+    for u in &users {
+        if u.name == "root" || u.uid == 0 {
+            read_bkt.root = true;
+            write_bkt.root = true;
+            exec_bkt.root = true;
+            continue;
+        }
+        let d = match effective_for_user_path(&target, &u.name) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        let cant_traverse = !user_can_traverse(&u.name, &target);
+        for (bkt, has) in [
+            (&mut read_bkt, d.read),
+            (&mut write_bkt, d.write),
+            (&mut exec_bkt, d.exec),
+        ] {
+            if has {
+                classify_into(bkt, &u.name, &d.reason);
+                if cant_traverse {
+                    bkt.cant_traverse.insert(u.name.clone());
+                }
+            }
+        }
+    }
+
     let report = WhoCanReport {
         path: target.display().to_string(),
-        read: r_users,
-        write: w_users,
-        exec: x_users,
-        blocked_by,
+        read: sorted_flat(&read_bkt),
+        write: sorted_flat(&write_bkt),
+        exec: sorted_flat(&exec_bkt),
+        blocked_by: blocked_by.clone(),
     };
 
     if as_json {
         println!("{}", serde_json::to_string_pretty(&report).unwrap());
-    } else {
-        println!("access report for: {}", report.path);
-        println!("  owner: {} ({})", uid_to_name(Uid::from_raw(uid)), uid);
-        println!("  group: {} ({})", gid_to_name(Gid::from_raw(gid)), gid);
-        println!("  mode:  {:04o}", mode);
-        if let Some(b) = &report.blocked_by {
-            println!("  NOTE: parent {b} blocks traversal for non-priv users.");
-        }
-        println!();
-        print_users("read", &report.read);
-        print_users("write", &report.write);
-        print_users("exec", &report.exec);
+        return Ok(());
     }
+
+    // ── Header card ───────────────────────────────────────────────────
+    println!();
+    println!(
+        "{} {}",
+        paint(Style::Separator, glyphs().header_marker),
+        paint(Style::Primary, &target.display().to_string())
+    );
+    println!("  {}", render::rule(61));
+
+    let owner_name = uid_to_name(Uid::from_raw(uid));
+    let group_name = gid_to_name(Gid::from_raw(gid));
+    let is_dir = md.is_dir();
+    let is_symlink = md.file_type().is_symlink();
+    let mode_str = format!(
+        "{:04o}  {}  {}",
+        mode,
+        paint(Style::Separator, glyphs().midot),
+        render::mode_symbolic_colored(mode, is_dir, is_symlink)
+    );
+    let acl_txt = if has_extended_acl(&target) {
+        paint(Style::AclMarker, "present")
+    } else {
+        paint(Style::Label, "none")
+    };
+    println!(
+        "  {}  {} {}      {}  {}",
+        paint(Style::Label, "owner"),
+        paint(Style::User, &owner_name),
+        paint(Style::Label, &format!("(uid {uid})")),
+        paint(Style::Label, "mode"),
+        mode_str
+    );
+    println!(
+        "  {}  {} {}    {}   {}",
+        paint(Style::Label, "group"),
+        paint(Style::Group, &group_name),
+        paint(Style::Label, &format!("(gid {gid})")),
+        paint(Style::Label, "acl "),
+        acl_txt
+    );
+
+    if mode & 0o004 != 0 {
+        println!();
+        println!(
+            "  {}  {}",
+            paint(Style::WarnMajor, glyphs().warn),
+            paint(
+                Style::WarnMajor,
+                "WORLD-READABLE: 'other' bits grant read to every user on the system."
+            )
+        );
+    }
+    if let Some(b) = &blocked_by {
+        println!();
+        println!(
+            "  {}  {}",
+            paint(Style::WarnMajor, glyphs().warn),
+            paint(
+                Style::WarnMajor,
+                &format!("{b} blocks traversal for users outside its group.")
+            )
+        );
+        println!(
+            "     {}",
+            paint(
+                Style::Label,
+                "users below with no traverse are marked with ⚠"
+            )
+        );
+    }
+
+    print_section("READ", &read_bkt);
+    print_section("WRITE", &write_bkt);
+    print_section("EXEC", &exec_bkt);
+    println!();
+
     Ok(())
 }
 
-fn print_users(label: &str, names: &[String]) {
-    if names.is_empty() {
-        println!("  {label:<6} (none beyond root)");
-    } else if names.len() > 20 {
-        println!("  {label:<6} {} users", names.len());
+fn classify_into(b: &mut Buckets, user: &str, reason: &str) {
+    if reason == "owner" {
+        b.owner.push(user.into());
+    } else if reason == "group member" {
+        b.group.push(user.into());
+    } else if reason == "other" {
+        b.other.push(user.into());
+    } else if reason.starts_with("acl") {
+        b.acl.push(user.into());
     } else {
-        println!("  {label:<6} {}", names.join(", "));
+        // Unknown reason -> put in ACL (safe fallback; root handled separately).
+        b.acl.push(user.into());
     }
+}
+
+fn sorted_flat(b: &Buckets) -> Vec<String> {
+    let mut all: BTreeSet<String> = BTreeSet::new();
+    all.extend(b.owner.iter().cloned());
+    all.extend(b.group.iter().cloned());
+    all.extend(b.other.iter().cloned());
+    all.extend(b.acl.iter().cloned());
+    all.into_iter().collect()
+}
+
+fn print_section(title: &str, b: &Buckets) {
+    let count = b.owner.len() + b.group.len() + b.other.len() + b.acl.len();
+    println!();
+    let user_word = if count == 1 { "user" } else { "users" };
+    println!(
+        "  {}  {}",
+        paint(Style::Primary, title),
+        paint(Style::Label, &format!("({count} {user_word})"))
+    );
+    if count == 0 {
+        println!(
+            "    {}",
+            paint(Style::Label, "(none beyond root)")
+        );
+        if b.root {
+            println!(
+                "    {}",
+                paint(Style::Label, "root also (superuser)")
+            );
+        }
+        return;
+    }
+    print_bucket("via owner         ", &b.owner, b);
+    print_bucket("via group member  ", &b.group, b);
+    print_bucket("via 'other' bits  ", &b.other, b);
+    print_bucket("via ACL           ", &b.acl, b);
+    if b.root {
+        println!(
+            "    {}",
+            paint(Style::Label, "root also (superuser)")
+        );
+    }
+}
+
+fn print_bucket(label: &str, users: &[String], b: &Buckets) {
+    if users.is_empty() {
+        println!(
+            "    {}  {}",
+            paint(Style::Label, label),
+            paint(Style::Separator, "—")
+        );
+        return;
+    }
+    // Flag users that can't actually traverse.
+    let mut shown = users.to_vec();
+    shown.sort();
+    let mut rendered: Vec<String> = Vec::with_capacity(shown.len());
+    for u in &shown {
+        if b.cant_traverse.contains(u) {
+            rendered.push(format!(
+                "{} {}",
+                paint(Style::WarnMajor, glyphs().warn),
+                paint(Style::User, u)
+            ));
+        } else {
+            rendered.push(paint(Style::User, u));
+        }
+    }
+    // If very many, collapse with count.
+    if rendered.len() > 20 {
+        println!(
+            "    {}  {} {}",
+            paint(Style::Label, label),
+            paint(Style::Primary, &format!("{}", rendered.len())),
+            paint(Style::Label, "users (collapsed)")
+        );
+    } else {
+        println!("    {}  {}", paint(Style::Label, label), rendered.join(", "));
+    }
+}
+
+fn user_can_traverse(user: &str, target: &Path) -> bool {
+    let chain = path_chain(target, Path::new("/"));
+    for p in chain.iter().take(chain.len().saturating_sub(1)) {
+        let d = match effective_for_user_path(p, user) {
+            Ok(d) => d,
+            Err(_) => return false,
+        };
+        if !d.exec {
+            return false;
+        }
+    }
+    true
 }
 
 struct UserRow {
@@ -104,6 +298,7 @@ struct UserRow {
 
 fn read_passwd_users() -> Vec<UserRow> {
     let mut out = Vec::new();
+    let mut seen = BTreeMap::new();
     if let Ok(content) = fs::read_to_string("/etc/passwd") {
         for line in content.lines() {
             let parts: Vec<&str> = line.split(':').collect();
@@ -111,62 +306,18 @@ fn read_passwd_users() -> Vec<UserRow> {
                 continue;
             }
             if let Ok(uid) = parts[2].parse::<u32>() {
-                out.push(UserRow {
-                    name: parts[0].to_string(),
-                    uid,
-                });
+                seen.entry(parts[0].to_string()).or_insert(uid);
             }
         }
+    }
+    for (name, uid) in seen {
+        out.push(UserRow { name, uid });
     }
     out
 }
 
-fn user_has_bit(
-    user: &UserRow,
-    chain: &[std::path::PathBuf],
-    target: &Path,
-    bit: u32,
-    target_uid: u32,
-    target_gid: u32,
-    target_mode: u32,
-) -> bool {
-    if user.uid == 0 {
-        return true;
-    }
-    // Must traverse all parents (o+x OR owner/group with x).
-    for p in &chain[..chain.len().saturating_sub(1)] {
-        if let Ok(md) = fs::symlink_metadata(p) {
-            let m = md.mode() & 0o7777;
-            let pu = md.uid();
-            let pg = md.gid();
-            let ok = if user.uid == pu {
-                (m & 0o100) != 0
-            } else if user_in_gid(user.uid, pg) {
-                (m & 0o010) != 0
-            } else {
-                (m & 0o001) != 0
-            };
-            if !ok {
-                return false;
-            }
-        } else {
-            return false;
-        }
-    }
-    // Now check the target itself.
-    let _ = target;
-    if user.uid == target_uid {
-        return (target_mode & (bit << 6)) != 0;
-    }
-    if user_in_gid(user.uid, target_gid) {
-        return (target_mode & (bit << 3)) != 0;
-    }
-    (target_mode & bit) != 0
-}
-
-fn user_in_gid(uid: u32, gid: u32) -> bool {
-    // Get the user name first.
-    let name = uid_to_name(Uid::from_raw(uid));
-    let gids = user_gids(&name).unwrap_or_default();
-    gids.iter().any(|g| g.as_raw() == gid)
+// Legacy helpers retained for path_chain consumers that still need them.
+#[allow(dead_code)]
+fn _unused() {
+    let _ = PathBuf::new();
 }
