@@ -323,6 +323,8 @@ fn run(cli: Cli) -> errors::Result<()> {
             has_acl,
             exclude,
             print0,
+            count,
+            head,
         } => {
             let mode_num = match mode {
                 Some(s) => Some(chperm::parse_octal(&s)?),
@@ -345,7 +347,7 @@ fn run(cli: Cli) -> errors::Result<()> {
                 no_group: false,
             };
             let ex = matcher::ExcludeSet::new(&exclude)?;
-            find::cmd_find(&path, &filter, &ex, print0)
+            find::cmd_find(&path, &filter, &ex, print0, count, head)
         }
         Command::Explain { path, for_user } => explain::cmd_explain(&path, for_user.as_deref()),
         Command::Compare { a, b, recursive } => compare::cmd_compare(&a, &b, recursive),

@@ -491,6 +491,12 @@ Example: `janitor find /srv -mode 777 -0 | sudo janitor chmod --stdin0 750`"
         /// Output NUL-separated (pair with `chmod --stdin0`).
         #[arg(short = '0', long = "print0")]
         print0: bool,
+        /// Print only the match count, not the paths.
+        #[arg(long = "count")]
+        count: bool,
+        /// Print at most N matches, then stop.
+        #[arg(long = "head", value_name = "N")]
+        head: Option<usize>,
     },
 
     /// Explain why a user can (or cannot) read / write / execute PATH.
