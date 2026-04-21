@@ -607,6 +607,9 @@ All paths are snapshotted up front and a single backup id is printed, so one \
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+
+    /// Emit a roff man page to stdout.
+    Man,
 }
 
 #[derive(Subcommand, Debug)]

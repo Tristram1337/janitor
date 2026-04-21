@@ -82,7 +82,7 @@ fn main() {
     match run(cli) {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("error: {e}");
+            render::eprint_diag(render::DiagLevel::Error, &e.to_string(), None, &[]);
             std::process::exit(1);
         }
     }
@@ -367,5 +367,6 @@ fn run(cli: Cli) -> errors::Result<()> {
             AttrCmd::ClearAppendOnly { path } => attr::cmd_attr_clear_append(&path),
         },
         Command::Completions { shell } => completions::cmd_completions(shell),
+        Command::Man => completions::cmd_man(),
     }
 }
