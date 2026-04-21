@@ -2,75 +2,68 @@
 
 use crate::chperm::cmd_chmod;
 use crate::errors::{PmError, Result};
+use crate::render::{paint, rule, Style};
 
-pub const PRESETS: &[(&str, &str, &str)] = &[
-    ("private", "700", "owner only"),
-    ("private-dir", "700", "directory visible to owner only"),
-    (
-        "private-file",
-        "600",
-        "file readable/writable by owner only",
-    ),
-    (
-        "group-shared",
-        "770",
-        "rwx for owner and group, none for other",
-    ),
-    ("group-read", "750", "rwx owner, rx group, none other"),
-    ("public-read", "755", "rwx owner, rx group, rx other"),
-    ("public-file", "644", "rw owner, r group, r other"),
-    (
-        "sticky-dir",
-        "1777",
-        "world-writable with sticky bit (/tmp style)",
-    ),
-    (
-        "setgid-dir",
-        "2775",
-        "group-shared dir with setgid (new files inherit group)",
-    ),
-    ("secret", "400", "read-only for owner, nobody else"),
-    (
-        "secret-dir",
-        "500",
-        "directory readable/traversable by owner only, read-only",
-    ),
-    (
-        "exec-only",
-        "711",
-        "owner rwx, others may traverse but not list",
-    ),
-    ("ssh-key", "600", "private SSH key / secret file (owner rw)"),
-    (
-        "ssh-dir",
-        "700",
-        "SSH / secret directory (owner rwx, nobody else)",
-    ),
-    (
-        "config",
-        "640",
-        "service config readable by owner + group (rw/r/-)",
-    ),
-    ("log-file", "640", "log file (owner rw, group r, other -)"),
-    (
-        "systemd-unit",
-        "644",
-        "systemd unit / service file (rw/r/r)",
-    ),
-    (
-        "read-only",
-        "444",
-        "read-only for everyone (legal-hold style)",
-    ),
-    ("no-access", "000", "no access for anyone (placeholder)"),
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub enum PresetKind {
+    Dir,
+    File,
+}
+
+pub const PRESETS: &[(&str, &str, &str, PresetKind)] = &[
+    ("private", "700", "owner only (dir or file)", PresetKind::Dir),
+    ("private-dir", "700", "directory visible to owner only", PresetKind::Dir),
+    ("private-file", "600", "file rw by owner only", PresetKind::File),
+    ("group-shared", "770", "rwx owner + group, none other", PresetKind::Dir),
+    ("group-read", "750", "rwx owner, rx group, none other", PresetKind::Dir),
+    ("public-read", "755", "rwx owner, rx group, rx other", PresetKind::Dir),
+    ("public-file", "644", "rw owner, r group, r other", PresetKind::File),
+    ("sticky-dir", "1777", "world-writable with sticky bit (/tmp style)", PresetKind::Dir),
+    ("setgid-dir", "2775", "group-shared dir, setgid (new files inherit group)", PresetKind::Dir),
+    ("secret", "400", "read-only for owner, nobody else", PresetKind::File),
+    ("secret-dir", "500", "owner-only directory, read-only", PresetKind::Dir),
+    ("exec-only", "711", "owner rwx; others may traverse but not list", PresetKind::Dir),
+    ("ssh-key", "600", "private SSH key / secret file (owner rw)", PresetKind::File),
+    ("ssh-dir", "700", "SSH / secret directory (owner rwx)", PresetKind::Dir),
+    ("config", "640", "service config (owner rw, group r)", PresetKind::File),
+    ("log-file", "640", "log file (owner rw, group r)", PresetKind::File),
+    ("systemd-unit", "644", "systemd unit / service file (rw/r/r)", PresetKind::File),
+    ("read-only", "444", "read-only for everyone (legal-hold style)", PresetKind::File),
+    ("no-access", "000", "no access for anyone (placeholder)", PresetKind::File),
 ];
 
 pub fn cmd_list_presets() {
-    println!("{:<15}  {:<6}  {}", "name", "mode", "description");
-    println!("{}", "-".repeat(70));
-    for (name, mode, desc) in PRESETS {
-        println!("{name:<15}  {mode:<6}  {desc}");
+    println!();
+    println!("  {}", paint(Style::Primary, "available presets"));
+    println!();
+    for (label, kind) in [("directories", PresetKind::Dir), ("files", PresetKind::File)] {
+        println!("  {}", paint(Style::Label, label));
+        println!(
+            "    {:<15}  {:<6}  {}",
+            paint(Style::Label, "name"),
+            paint(Style::Label, "mode"),
+            paint(Style::Label, "description")
+        );
+        println!("    {}", paint(Style::Separator, &rule(64)));
+        for (name, mode, desc, k) in PRESETS {
+            if *k != kind {
+                continue;
+            }
+            println!(
+                "    {:<15}  {:<6}  {}",
+                paint(Style::Primary, name),
+                paint(Style::Primary, &format!("0{}", mode.trim_start_matches('0'))),
+                paint(Style::Label, desc),
+            );
+        }
+        println!();
     }
+    println!(
+        "  {}  {}",
+        paint(Style::Label, "use:"),
+        paint(Style::Primary, "janitor preset <name> <path> [path...]")
+    );
+    println!();
 }
 
 pub fn cmd_apply_preset(
@@ -80,20 +73,73 @@ pub fn cmd_apply_preset(
     exclude: &crate::matcher::ExcludeSet,
     dry_run: bool,
 ) -> Result<()> {
-    let preset = PRESETS
-        .iter()
-        .find(|(n, _, _)| *n == name)
-        .ok_or_else(|| PmError::Other(format!("unknown preset: {name:?}  (try `presets`)")))?;
-    println!("applying preset {:?} → mode {}", preset.0, preset.1);
+    let preset = match PRESETS.iter().find(|(n, _, _, _)| *n == name) {
+        Some(p) => p,
+        None => {
+            let suggestion = closest_preset(name);
+            let tail = match suggestion {
+                Some(s) => format!("  (did you mean `{s}`?  or run `janitor presets`)"),
+                None => "  (try `janitor presets` for the full list)".into(),
+            };
+            return Err(PmError::Other(format!("unknown preset: {name:?}{tail}")));
+        }
+    };
+    if is_terminal::is_terminal(std::io::stdout()) {
+        println!(
+            "  {} {}  {}  {}",
+            paint(Style::Label, "preset"),
+            paint(Style::Primary, preset.0),
+            paint(Style::Separator, "→"),
+            paint(Style::Primary, &format!("mode 0{}", preset.1.trim_start_matches('0')))
+        );
+        println!("  {}", paint(Style::Label, preset.2));
+    }
     cmd_chmod(preset.1, paths, recursive, false, None, exclude, dry_run)
 }
 
 /// Look up a preset by name and return its octal mode string.
-/// Used by `batch` / `policy apply` which manage their own snapshot.
 pub fn resolve_preset(name: &str) -> Result<&'static str> {
     PRESETS
         .iter()
-        .find(|(n, _, _)| *n == name)
-        .map(|(_, m, _)| *m)
+        .find(|(n, _, _, _)| *n == name)
+        .map(|(_, m, _, _)| *m)
         .ok_or_else(|| PmError::Other(format!("unknown preset: {name:?}  (try `presets`)")))
+}
+
+/// Cheap Levenshtein-ish distance on bytes; returns the closest preset name
+/// within distance 3, if any.
+fn closest_preset(input: &str) -> Option<&'static str> {
+    let mut best: Option<(&str, usize)> = None;
+    for (name, _, _, _) in PRESETS {
+        let d = edit_distance(input, name);
+        if d <= 3 && best.map(|(_, bd)| d < bd).unwrap_or(true) {
+            best = Some((name, d));
+        }
+    }
+    best.map(|(n, _)| n)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let (m, n) = (a.len(), b.len());
+    if m == 0 {
+        return n;
+    }
+    if n == 0 {
+        return m;
+    }
+    let mut prev: Vec<usize> = (0..=n).collect();
+    let mut curr = vec![0usize; n + 1];
+    for i in 1..=m {
+        curr[0] = i;
+        for j in 1..=n {
+            let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
+            curr[j] = (prev[j] + 1)
+                .min(curr[j - 1] + 1)
+                .min(prev[j - 1] + cost);
+        }
+        std::mem::swap(&mut prev, &mut curr);
+    }
+    prev[n]
 }
