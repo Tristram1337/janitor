@@ -547,6 +547,7 @@ pub fn cmd_copy_perms(
     exclude: &crate::matcher::ExcludeSet,
     dry_run: bool,
 ) -> Result<()> {
+    use nix::unistd::{Gid, Uid};
     let src_path = resolve_path(src)?;
     let dst_path = resolve_path(dst)?;
     crate::locks::ensure_not_locked(&dst_path)?;
@@ -557,6 +558,49 @@ pub fn cmd_copy_perms(
     let src_mode = src_md.permissions().mode() & 0o7777;
     let src_uid = src_md.uid();
     let src_gid = src_md.gid();
+    let src_user = uid_to_name(Uid::from_raw(src_uid));
+    let src_group = gid_to_name(Gid::from_raw(src_gid));
+    let src_has_acl = crate::acl::has_extended_acl(&src_path);
+
+    let stdout_tty = is_terminal::is_terminal(std::io::stdout());
+
+    // ── Source profile header (TTY only) ─────────────────────────────
+    if stdout_tty {
+        let marker = if dry_run { "  [DRY RUN]" } else { "" };
+        println!(
+            "\n  {}  {}",
+            paint(Style::Label, "source:"),
+            paint(Style::Primary, &src_path.display().to_string())
+        );
+        println!(
+            "           mode  {:04o} {}",
+            src_mode,
+            paint(
+                Style::Label,
+                &crate::render::format_symbolic(src_mode, src_md.is_dir(), false)
+            )
+        );
+        println!(
+            "           owner {}:{} (uid {} : gid {})",
+            paint(Style::User, &src_user),
+            paint(Style::Group, &src_group),
+            src_uid,
+            src_gid
+        );
+        println!(
+            "           acl   {}",
+            paint(
+                Style::Label,
+                if src_has_acl { "present (will be copied)" } else { "none" }
+            )
+        );
+        println!(
+            "\n  {}  {}{}",
+            paint(Style::Label, "target:"),
+            paint(Style::Primary, &dst_path.display().to_string()),
+            paint(Style::WarnMajor, marker)
+        );
+    }
 
     // Collect targets (dst + optionally children), honoring --exclude.
     let mut targets: Vec<std::path::PathBuf> = Vec::new();
@@ -583,8 +627,8 @@ pub fn cmd_copy_perms(
     }
 
     with_lock(|| {
-        // Snapshot before any change.
         let snap_entries = snapshot_with_acl(&targets, include_acl);
+        let mut backup_id: Option<String> = None;
         if !dry_run {
             let bid = save_backup(
                 snap_entries,
@@ -600,28 +644,49 @@ pub fn cmd_copy_perms(
                     parent_op: None,
                 },
             )?;
-            println!("backup: {bid}");
+            backup_id = Some(bid);
         }
 
         if dry_run {
-            for t in &targets {
-                println!(
-                    "[dry-run] chmod {src_mode:o} {}  (from {})",
-                    t.display(),
-                    src_path.display()
-                );
-                println!("[dry-run] lchown {src_uid}:{src_gid} {}", t.display());
-            }
-            if include_acl {
-                println!(
-                    "[dry-run] copy ACL from {} to each target",
-                    src_path.display()
-                );
+            if stdout_tty {
+                println!();
+                let max_show = 8;
+                for (i, t) in targets.iter().enumerate() {
+                    if i >= max_show {
+                        println!(
+                            "  {} ... and {} more",
+                            paint(Style::Separator, "…"),
+                            targets.len() - max_show
+                        );
+                        break;
+                    }
+                    println!(
+                        "  [dry-run] {}  {}",
+                        paint(Style::Label, &format!("chmod {src_mode:04o} chown {src_user}:{src_group}")),
+                        paint(Style::Primary, &t.display().to_string())
+                    );
+                }
+                if include_acl && src_has_acl {
+                    println!(
+                        "  [dry-run] {}",
+                        paint(Style::Label, "copy ACL from source to each target")
+                    );
+                }
+            } else {
+                for t in &targets {
+                    println!(
+                        "[dry-run] chmod {src_mode:o} {}  (from {})",
+                        t.display(),
+                        src_path.display()
+                    );
+                    println!("[dry-run] lchown {src_uid}:{src_gid} {}", t.display());
+                }
             }
             return Ok(());
         }
 
         // Apply mode + ownership.
+        let mut changed = 0usize;
         for t in &targets {
             let tmd = fs::symlink_metadata(t).map_err(|e| PmError::InsufficientPrivileges {
                 path: t.clone(),
@@ -641,6 +706,7 @@ pub fn cmd_copy_perms(
                     reason: e.to_string(),
                 }
             })?;
+            changed += 1;
         }
 
         if include_acl {
@@ -657,13 +723,16 @@ pub fn cmd_copy_perms(
             }
         }
 
-        println!(
-            "copied perms from {} to {} ({} {})",
-            src_path.display(),
-            dst_path.display(),
-            targets.len(),
-            if targets.len() == 1 { "path" } else { "paths" }
-        );
+        if let Some(bid) = &backup_id {
+            println!(
+                "\n{}  {}",
+                paint(Style::Label, "backup:"),
+                paint(Style::Primary, bid)
+            );
+        }
+        let n_s = changed.to_string();
+        let segs: Vec<(&str, &str)> = vec![(n_s.as_str(), if changed == 1 { "path updated" } else { "paths updated" })];
+        eprintln!("{}", summary_line(&segs));
         Ok(())
     })
 }
