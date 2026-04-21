@@ -29,6 +29,7 @@ mod info;
 mod locking;
 mod locks;
 mod matcher;
+mod access;
 mod perms;
 mod policy;
 mod presets;

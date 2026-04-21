@@ -13,7 +13,6 @@ use crate::errors::Result;
 use crate::render::{
     self, badge, header_line, kv, kv_pair, paint, rule, section_title, DiagLevel, Style,
 };
-use crate::users::{lookup_user, user_gids};
 
 fn file_type_char(md: &fs::Metadata) -> char {
     let ft = md.file_type();
@@ -114,26 +113,12 @@ fn days_to_ymd(days: i64) -> (i32, u32, u32) {
 }
 
 /// Effective (read, write, execute/traverse) for `username` on this inode.
-fn effective_for_user(md: &fs::Metadata, username: &str) -> Result<(bool, bool, bool)> {
-    let u = lookup_user(username)?;
-    let uid = u.uid.as_raw();
-    let gids: std::collections::HashSet<u32> = user_gids(username)?
-        .into_iter()
-        .map(|g| g.as_raw())
-        .collect();
-    let mode = md.mode() & 0o7777;
-    if uid == 0 {
-        let is_dir = md.is_dir();
-        return Ok((true, true, is_dir || (mode & 0o111 != 0)));
-    }
-    let triad = if uid == md.uid() {
-        (mode >> 6) & 0o7
-    } else if gids.contains(&md.gid()) {
-        (mode >> 3) & 0o7
-    } else {
-        mode & 0o7
-    };
-    Ok((triad & 0o4 != 0, triad & 0o2 != 0, triad & 0o1 != 0))
+fn effective_for_user(
+    path: &std::path::Path,
+    username: &str,
+) -> Result<(bool, bool, bool, String)> {
+    let d = crate::access::effective_for_user_path(path, username)?;
+    Ok((d.read, d.write, d.exec, d.reason))
 }
 
 fn kind_label(ft: char) -> &'static str {
@@ -300,7 +285,7 @@ pub fn cmd_info(path: &str, for_user: Option<&str>) -> Result<()> {
 
     // ── Access section (only with -U) ─────────────────────────────────
     if let Some(user) = for_user {
-        let (r, w, x) = effective_for_user(&md, user)?;
+        let (r, w, x, reason) = effective_for_user(&p, user)?;
         let bits_raw = format!(
             "{}{}{}",
             if r { 'r' } else { '-' },
@@ -319,6 +304,11 @@ pub fn cmd_info(path: &str, for_user: Option<&str>) -> Result<()> {
             "  {}{}   {}",
             paint(Style::Separator, g.tree_last),
             bits,
+            paint(Style::Label, &format!("via {reason}"))
+        );
+        println!(
+            "  {}   {}",
+            " ".repeat(3),
             paint(
                 Style::Label,
                 "(on this inode; use `who-can` for chain evaluation)"
