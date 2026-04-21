@@ -35,6 +35,7 @@ mod policy;
 mod presets;
 mod prune;
 mod render;
+mod seal;
 mod snapshot;
 mod tree;
 mod types;
@@ -310,6 +311,22 @@ fn run(cli: Cli) -> errors::Result<()> {
             presets::cmd_list_presets();
             Ok(())
         }
+        Command::Seal {
+            base,
+            base_spec,
+            recursive,
+            allow,
+            allow_group,
+            exclude,
+        } => seal::cmd_seal(
+            &base,
+            &base_spec,
+            recursive,
+            &allow,
+            &allow_group,
+            &exclude,
+            dry_run,
+        ),
         Command::Find {
             path,
             mode,

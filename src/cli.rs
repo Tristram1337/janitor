@@ -460,6 +460,54 @@ every file and subdirectory under PATH (the whole tree is walked)."
     /// List all available presets with their modes.
     Presets,
 
+    /// Seal a directory tree to a uniform baseline, with surgical per-path pinholes.
+    #[command(
+        long_about = "Seal is the atomic combination of `chown -R` + `chmod -R` + \
+`setfacl` for 'make this tree uniform, except for a handful of exceptions'.\n\n\
+Typical use: you have /srv/secrets that should be root:root 0700 everywhere, \
+but two specific files must be readable by one specific user. Without seal, \
+this takes 9+ commands (chown, chmod, then setfacl -m u:USER:--x on every \
+parent directory, then the final rwx entry) and one typo silently breaks \
+the pinhole. With seal, it's one transaction with one backup.\n\n\
+Example:\n  \
+  janitor seal /srv/secrets \\\n    \
+    --base root:root:700 --recursive \\\n    \
+    --allow bob:r  /srv/secrets/company/.env \\\n    \
+    --allow alice:rw /srv/secrets/shared/config.yaml \\\n    \
+    --dry-run\n\n\
+Auto-traverse: seal automatically adds `u:USER:--x` ACL entries on every \
+parent directory between --base and each --allow target, so the pinhole \
+actually reaches the intended file. This is the #1 source of silent \
+'why can't they read it?' failures with manual setfacl.\n\n\
+One snapshot is taken for the entire operation; revert with `restore <id>`.",
+        after_help = "see also: `grant`, `acl grant`, `restore`, `policy apply`"
+    )]
+    Seal {
+        /// Base directory to seal.
+        base: String,
+        /// Baseline owner:group:mode applied to every entry under base.
+        /// Examples: `root:root:700`, `alice:dev:0644`, `:www-data:750` (keep owner).
+        #[arg(short = 'B', long = "base", value_name = "USER:GROUP:MODE")]
+        base_spec: String,
+        /// Apply baseline recursively (seal the whole subtree). Without -R only
+        /// the base directory itself is adjusted.
+        #[arg(short = 'R', long = "recursive")]
+        recursive: bool,
+        /// Pinhole: grant USER:PERM to a specific PATH inside base. Repeatable.
+        /// Format: `USER:PERM PATH` as two separate values.
+        /// PERM is any combination of r/w/x.
+        /// Example: `--allow bob:r /srv/x/file.txt`.
+        #[arg(long = "allow", value_names = ["USER:PERM", "PATH"], num_args = 2, action = clap::ArgAction::Append)]
+        allow: Vec<String>,
+        /// Same as --allow but for a group.
+        /// Example: `--allow-group devs:rw /srv/x/shared.yaml`.
+        #[arg(long = "allow-group", value_names = ["GROUP:PERM", "PATH"], num_args = 2, action = clap::ArgAction::Append)]
+        allow_group: Vec<String>,
+        /// Skip any path matching this glob (repeatable).
+        #[arg(short = 'E', long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
+    },
+
     /// Find paths matching a filesystem predicate (read-only; use with `batch` to mutate).
     #[command(
         long_about = "Read-only search over a directory tree, similar to `find(1)` but \

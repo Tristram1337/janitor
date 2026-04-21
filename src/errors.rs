@@ -48,6 +48,12 @@ pub enum PmError {
     #[error("filesystem at {path} does not support POSIX ACLs\n       use regular `grant` / `chmod` instead, or remount with the `acl` mount option")]
     AclUnsupported { path: PathBuf },
 
+    #[error("allow path {allow} is not inside seal base {base}\n       seal refuses to touch paths outside the base directory")]
+    SealAllowOutsideBase { allow: PathBuf, base: PathBuf },
+
+    #[error("seal --base must be a directory: {0}")]
+    SealBaseNotDir(PathBuf),
+
     #[error("{0}")]
     Other(String),
 }
