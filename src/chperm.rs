@@ -9,9 +9,10 @@ use crate::errors::{PmError, Result};
 use crate::helpers::resolve_path;
 use crate::locking::with_lock;
 use crate::matcher::ExcludeSet;
+use crate::render::{paint, summary_line, Style};
 use crate::snapshot::snapshot_with_acl;
 use crate::types::Operation;
-use crate::users::{lookup_group, lookup_user};
+use crate::users::{gid_to_name, lookup_group, lookup_user, uid_to_name};
 
 /// Resolve each input path, enforce `ensure_not_locked`, and expand to a flat
 /// list honoring `recursive` + `exclude`. Returns `(resolved_targets, paths)`.
@@ -51,16 +52,24 @@ pub fn expand_targets(
 
 /// Apply a chmod (octal or symbolic, or a fixed `ref_mode`) to each path in
 /// `paths`. Does NOT take a snapshot; the caller must record its own backup.
+/// Returns (changed, unchanged, failed) counts.
 pub fn apply_chmod_to_paths(
     paths: &[PathBuf],
     mode_spec: &str,
     ref_mode: Option<u32>,
     dry_run: bool,
-) -> Result<()> {
+) -> Result<(usize, usize, usize)> {
+    let stderr_tty = is_terminal::is_terminal(std::io::stderr());
+    let mut changed = 0usize;
+    let mut unchanged = 0usize;
+    let mut failed = 0usize;
     for p in paths {
         let md = match fs::symlink_metadata(p) {
             Ok(m) => m,
-            Err(_) => continue,
+            Err(_) => {
+                failed += 1;
+                continue;
+            }
         };
         if md.file_type().is_symlink() {
             continue;
@@ -79,45 +88,134 @@ pub fn apply_chmod_to_paths(
             apply_symbolic(current, mode_spec, md.is_dir())?
         };
         if new_mode == current {
+            unchanged += 1;
             continue;
         }
         if dry_run {
-            println!(
-                "[dry-run] chmod {new_mode:04o} {}  (was {current:04o})",
-                p.display()
-            );
+            if stderr_tty {
+                eprintln!(
+                    "  [dry-run] {:04o} {} {:04o}  {}",
+                    current,
+                    paint(Style::Separator, "→"),
+                    new_mode,
+                    paint(Style::Primary, &p.display().to_string())
+                );
+            } else {
+                eprintln!(
+                    "[dry-run] chmod {new_mode:04o} {}  (was {current:04o})",
+                    p.display()
+                );
+            }
+            changed += 1;
         } else {
-            fs::set_permissions(p, fs::Permissions::from_mode(new_mode)).map_err(|e| {
-                PmError::InsufficientPrivileges {
-                    path: p.clone(),
-                    reason: e.to_string(),
+            match fs::set_permissions(p, fs::Permissions::from_mode(new_mode)) {
+                Ok(()) => {
+                    if stderr_tty {
+                        eprintln!(
+                            "  {:04o} {} {:04o}  {}",
+                            current,
+                            paint(Style::Separator, "→"),
+                            new_mode,
+                            paint(Style::Primary, &p.display().to_string())
+                        );
+                    }
+                    changed += 1;
                 }
-            })?;
+                Err(e) => {
+                    failed += 1;
+                    eprintln!(
+                        "  {}: {}  {}",
+                        paint(Style::Danger, "error"),
+                        p.display(),
+                        e
+                    );
+                }
+            }
         }
     }
-    Ok(())
+    Ok((changed, unchanged, failed))
 }
 
 /// Apply a chown (uid / gid, either optional) to each path. No snapshot.
+/// Returns (changed, unchanged, failed).
 pub fn apply_chown_to_paths(
     paths: &[PathBuf],
     new_uid: Option<u32>,
     new_gid: Option<u32>,
     dry_run: bool,
-) -> Result<()> {
+) -> Result<(usize, usize, usize)> {
+    use nix::unistd::{Gid, Uid};
+    let stderr_tty = is_terminal::is_terminal(std::io::stderr());
+    let mut changed = 0usize;
+    let mut unchanged = 0usize;
+    let mut failed = 0usize;
+    let u_name = new_uid
+        .map(|u| uid_to_name(Uid::from_raw(u)))
+        .unwrap_or_else(|| "(keep)".into());
+    let g_name = new_gid
+        .map(|g| gid_to_name(Gid::from_raw(g)))
+        .unwrap_or_else(|| "(keep)".into());
     for p in paths {
+        let before = fs::symlink_metadata(p).ok();
+        let (bu, bg) = match &before {
+            Some(m) => (
+                uid_to_name(Uid::from_raw(m.uid())),
+                gid_to_name(Gid::from_raw(m.gid())),
+            ),
+            None => ("?".into(), "?".into()),
+        };
+        let will_change = match &before {
+            Some(m) => {
+                let u_diff = new_uid.map(|u| u != m.uid()).unwrap_or(false);
+                let g_diff = new_gid.map(|g| g != m.gid()).unwrap_or(false);
+                u_diff || g_diff
+            }
+            None => true,
+        };
+        if !will_change {
+            unchanged += 1;
+            continue;
+        }
         if dry_run {
-            let u = new_uid.map(|u| u.to_string()).unwrap_or_else(|| "-".into());
-            let g = new_gid.map(|g| g.to_string()).unwrap_or_else(|| "-".into());
-            println!("[dry-run] chown {u}:{g} {}", p.display());
+            eprintln!(
+                "  [dry-run] {}:{} {} {}:{}  {}",
+                paint(Style::User, &bu),
+                paint(Style::Group, &bg),
+                paint(Style::Separator, "→"),
+                paint(Style::User, &u_name),
+                paint(Style::Group, &g_name),
+                paint(Style::Primary, &p.display().to_string())
+            );
+            changed += 1;
         } else {
-            lchown(p, new_uid, new_gid).map_err(|e| PmError::InsufficientPrivileges {
-                path: p.clone(),
-                reason: e.to_string(),
-            })?;
+            match lchown(p, new_uid, new_gid) {
+                Ok(()) => {
+                    if stderr_tty {
+                        eprintln!(
+                            "  {}:{} {} {}:{}  {}",
+                            paint(Style::User, &bu),
+                            paint(Style::Group, &bg),
+                            paint(Style::Separator, "→"),
+                            paint(Style::User, &u_name),
+                            paint(Style::Group, &g_name),
+                            paint(Style::Primary, &p.display().to_string())
+                        );
+                    }
+                    changed += 1;
+                }
+                Err(e) => {
+                    failed += 1;
+                    eprintln!(
+                        "  {}: {}  {}",
+                        paint(Style::Danger, "error"),
+                        p.display(),
+                        e
+                    );
+                }
+            }
         }
     }
-    Ok(())
+    Ok((changed, unchanged, failed))
 }
 
 /// Resolve a chown `SPEC` (or `--reference FILE`) to `(uid, gid)`.
@@ -322,7 +420,17 @@ pub fn cmd_chmod(
             )?;
             println!("backup: {bid}");
         }
-        apply_chmod_to_paths(&paths, mode_spec, ref_mode, dry_run)
+        let (c, u, f) = apply_chmod_to_paths(&paths, mode_spec, ref_mode, dry_run)?;
+        let c_s = c.to_string();
+        let u_s = u.to_string();
+        let f_s = f.to_string();
+        let segs: Vec<(&str, &str)> = vec![
+            (c_s.as_str(), if dry_run { "would change" } else { "changed" }),
+            (u_s.as_str(), "unchanged"),
+            (if f > 0 { f_s.as_str() } else { "" }, "failed"),
+        ];
+        eprintln!("{}", summary_line(&segs));
+        if f > 0 { Err(PmError::Other(format!("{f} path(s) failed"))) } else { Ok(()) }
     })
 }
 
@@ -379,7 +487,17 @@ pub fn cmd_chown(
             )?;
             println!("backup: {bid}");
         }
-        apply_chown_to_paths(&paths, new_uid, new_gid, dry_run)
+        let (c, u, f) = apply_chown_to_paths(&paths, new_uid, new_gid, dry_run)?;
+        let c_s = c.to_string();
+        let u_s = u.to_string();
+        let f_s = f.to_string();
+        let segs: Vec<(&str, &str)> = vec![
+            (c_s.as_str(), if dry_run { "would change" } else { "changed" }),
+            (u_s.as_str(), "unchanged"),
+            (if f > 0 { f_s.as_str() } else { "" }, "failed"),
+        ];
+        eprintln!("{}", summary_line(&segs));
+        if f > 0 { Err(PmError::Other(format!("{f} path(s) failed"))) } else { Ok(()) }
     })
 }
 

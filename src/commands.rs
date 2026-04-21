@@ -13,9 +13,10 @@ use crate::helpers::{
 };
 use crate::locking::with_lock;
 use crate::perms::{apply_group_bits, apply_restore};
+use crate::render::{self, glyphs, paint, summary_line, DiagLevel, Style};
 use crate::snapshot::snapshot_with_acl;
 use crate::types::{AccessBits, Operation};
-use crate::users::lookup_user;
+use crate::users::{group_exists, lookup_user, user_in_group};
 
 pub fn cmd_grant(
     user: Option<&str>,
@@ -48,21 +49,75 @@ pub fn cmd_grant(
         None => default_group_name(&target),
     };
 
-    ensure_group(&group_name, dry_run)?;
-    if let Some(u) = user {
-        add_user_to_group(u, &group_name, dry_run)?;
+    let stdout_tty = is_terminal::is_terminal(std::io::stdout());
+    let g = glyphs();
+
+    // ── Title line (TTY only) ────────────────────────────────────────
+    if stdout_tty {
+        let u_disp = user.unwrap_or("-");
+        let marker = if dry_run { "  [DRY RUN]" } else { "" };
+        println!(
+            "{} janitor grant {} {} {}{}",
+            paint(Style::Separator, g.header_marker),
+            paint(Style::User, u_disp),
+            paint(Style::Primary, access),
+            paint(Style::Primary, &target.display().to_string()),
+            paint(Style::WarnMajor, marker)
+        );
+        println!();
     }
 
-    // Warn if target is world-readable (managed-group isolation is useless).
+    // ── World-readable warning (top of block) ────────────────────────
     if let Ok(md) = std::fs::symlink_metadata(&target) {
         let other_bits = md.mode() & 0o007;
         if other_bits & 0o004 != 0 {
-            eprintln!(
-                "warning: {} is world-readable (o={:03o}); managed-group isolation \
-                 gives no extra protection. Consider tightening 'other' bits first.",
-                target.display(),
-                other_bits
+            render::eprint_diag(
+                DiagLevel::Warning,
+                &format!(
+                    "{} is world-readable (o={:03o}); managed-group isolation won't help \
+                     until 'other' read bit is cleared.",
+                    target.display(),
+                    other_bits
+                ),
+                Some(&format!(
+                    "fix first: janitor chmod o-r {}",
+                    target.display()
+                )),
+                &[],
             );
+        }
+    }
+
+    // ── Narrate: group ensure + user add (dry-run predicts; apply acts) ─
+    let group_existed = group_exists(&group_name);
+    let user_in = user
+        .map(|u| user_in_group(u, &group_name))
+        .unwrap_or(true);
+    narrate_action(
+        stdout_tty,
+        dry_run,
+        group_existed,
+        "ensure group",
+        &paint(Style::Group, &group_name),
+    );
+    if !dry_run {
+        ensure_group(&group_name, false)?;
+    }
+    if let Some(u) = user {
+        narrate_action(
+            stdout_tty,
+            dry_run,
+            user_in,
+            "add user  ",
+            &format!(
+                "{} {} {}",
+                paint(Style::User, u),
+                paint(Style::Separator, "→"),
+                paint(Style::Group, &group_name)
+            ),
+        );
+        if !dry_run {
+            add_user_to_group(u, &group_name, false)?;
         }
     }
 
@@ -76,7 +131,6 @@ pub fn cmd_grant(
         chain[..chain.len().saturating_sub(1)].to_vec()
     };
 
-    // Skip world-traversable parents unless forced.
     let filtered_parents: Vec<PathBuf> = parents
         .iter()
         .filter(|p| {
@@ -84,33 +138,34 @@ pub fn cmd_grant(
                 return true;
             }
             match std::fs::symlink_metadata(p) {
-                Ok(md) => (md.mode() & 0o001) == 0, // not world-traversable
+                Ok(md) => (md.mode() & 0o001) == 0,
                 Err(_) => false,
             }
         })
         .cloned()
         .collect();
 
-    if filtered_parents.len() < parents.len() && !dry_run {
-        let skipped: Vec<String> = parents
-            .iter()
-            .filter(|p| !filtered_parents.contains(p))
-            .map(|p| p.display().to_string())
-            .collect();
-        if !skipped.is_empty() {
-            eprintln!(
-                "info: skipping already world-traversable parents: {} \
-                 (use --force-all-parents to override)",
-                skipped.join(", ")
-            );
+    // Narrate skipped world-traversable parents.
+    for p in &parents {
+        if !filtered_parents.contains(p) {
+            if stdout_tty {
+                println!(
+                    "  {} {}  {}  {}",
+                    paint(Style::Separator, "─"),
+                    paint(Style::Label, "skipped       "),
+                    paint(Style::Primary, &p.display().to_string()),
+                    paint(Style::Label, "(already world-traversable)")
+                );
+            }
         }
     }
 
-    let mut touched: Vec<PathBuf> = filtered_parents;
+    let mut touched: Vec<PathBuf> = filtered_parents.clone();
     touched.push(chain.last().unwrap().clone());
 
-    // Lock + snapshot + apply.
     with_lock(|| {
+        // Save backup early.
+        let mut backup_id: Option<String> = None;
         if !dry_run {
             let snap = snapshot_with_acl(&touched, capture_acl);
             let op = Operation {
@@ -124,17 +179,42 @@ pub fn cmd_grant(
                 recursive: Some(recursive),
                 parent_op: None,
             };
-            let bid = save_backup(snap, op)?;
-            println!("backup: {bid}");
+            backup_id = Some(save_backup(snap, op)?);
         }
 
-        // Parents: exactly `x` (traverse, replace existing group triad).
+        // Parents: exactly `x` (traverse), replace existing group triad.
         let traverse_bits = AccessBits(0o1);
-        for p in &touched[..touched.len() - 1] {
+        for p in &filtered_parents {
+            let before_mode = std::fs::symlink_metadata(p).map(|m| m.mode() & 0o7777).ok();
             apply_group_bits(p, &group_name, traverse_bits, dry_run, true)?;
+            let after_mode = std::fs::symlink_metadata(p).map(|m| m.mode() & 0o7777).ok();
+            let verb = if dry_run { "would g+rx   " } else { "chmod g+rx   " };
+            if stdout_tty {
+                let was = match before_mode {
+                    Some(m) => format!("  (was {:04o})", m),
+                    None => String::new(),
+                };
+                let now = match (after_mode, dry_run) {
+                    (_, true) => String::new(),
+                    (Some(m), false) => format!(" → {:04o}", m),
+                    _ => String::new(),
+                };
+                println!(
+                    "  {} {}  {}{}{}  {}",
+                    paint(Style::Ok, g.check),
+                    paint(Style::Label, verb),
+                    paint(Style::Primary, &p.display().to_string()),
+                    paint(Style::Label, &was),
+                    paint(Style::Label, &now),
+                    paint(Style::Label, "(parent traverse)")
+                );
+            }
         }
 
-        // Target: requested access, OR-ed.
+        // Target.
+        let t_before = std::fs::symlink_metadata(&target)
+            .map(|m| m.mode() & 0o7777)
+            .ok();
         apply_group_bits(
             touched.last().unwrap(),
             &group_name,
@@ -142,14 +222,48 @@ pub fn cmd_grant(
             dry_run,
             false,
         )?;
+        let t_after = std::fs::symlink_metadata(&target)
+            .map(|m| m.mode() & 0o7777)
+            .ok();
+        if stdout_tty {
+            let verb = if dry_run {
+                format!("would chgrp  ")
+            } else {
+                format!("chgrp        ")
+            };
+            println!(
+                "  {} {}  {} → {}",
+                paint(Style::Ok, g.check),
+                paint(Style::Label, &verb),
+                paint(Style::Primary, &target.display().to_string()),
+                paint(Style::Group, &group_name)
+            );
+            let verb2 = if dry_run { "would chmod  " } else { "chmod        " };
+            let was = t_before
+                .map(|m| format!("  (was {:04o})", m))
+                .unwrap_or_default();
+            let now = match (t_after, dry_run) {
+                (_, true) => String::new(),
+                (Some(m), false) => format!(" → {:04o}", m),
+                _ => String::new(),
+            };
+            println!(
+                "  {} {}  {}{}{}  {}",
+                paint(Style::Ok, g.check),
+                paint(Style::Label, verb2),
+                paint(Style::Primary, &target.display().to_string()),
+                paint(Style::Label, &was),
+                paint(Style::Label, &now),
+                paint(Style::Label, &format!("(group +{})", access))
+            );
+        }
 
-        // Recursive: walk into target dir.
+        // Recursive branch (unchanged logic, lightweight narration).
         if recursive && target.is_dir() {
             let extra = collect_recursive(&target);
             if !dry_run && !extra.is_empty() {
                 let snap2 = snapshot_with_acl(&extra, capture_acl);
                 if !snap2.is_empty() {
-                    // Read the last backup id to set parent_op.
                     let bid2 = save_backup(
                         snap2,
                         Operation {
@@ -164,17 +278,88 @@ pub fn cmd_grant(
                             parent_op: None,
                         },
                     )?;
-                    println!("backup (recursive): {bid2}");
+                    if stdout_tty {
+                        println!(
+                            "  {} {}  {} {} {}",
+                            paint(Style::Ok, g.check),
+                            paint(Style::Label, "recursive    "),
+                            paint(Style::Primary, &extra.len().to_string()),
+                            paint(Style::Label, "entries (backup"),
+                            paint(Style::Primary, &format!("{bid2})"))
+                        );
+                    }
                 }
             }
-            // Apply in parallel with rayon.
             extra
                 .par_iter()
                 .try_for_each(|p| apply_group_bits(p, &group_name, access_bits, dry_run, false))?;
         }
 
+        // ── Footer: backup/undo/verify block ─────────────────────────
+        println!();
+        if let Some(bid) = &backup_id {
+            println!(
+                "{}  {}",
+                paint(Style::Label, "backup:"),
+                paint(Style::Primary, bid)
+            );
+            if stdout_tty {
+                println!(
+                    "{}    {}",
+                    paint(Style::Label, "undo:"),
+                    paint(Style::Primary, "janitor undo")
+                );
+                if let Some(u) = user {
+                    println!(
+                        "{}  {}",
+                        paint(Style::Label, "verify:"),
+                        paint(
+                            Style::Primary,
+                            &format!("sudo -u {} cat {}", u, target.display())
+                        )
+                    );
+                }
+            }
+        } else {
+            // dry-run footer
+            let segs: Vec<(&str, &str)> = vec![("dry run", "— nothing changed")];
+            let mut s = summary_line(&segs);
+            s.push_str("  ");
+            s.push_str(&paint(Style::Label, "(re-run without --dry-run to apply)"));
+            println!("{s}");
+        }
         Ok(())
     })
+}
+
+fn narrate_action(tty: bool, dry_run: bool, already_ok: bool, verb: &str, subject: &str) {
+    if !tty {
+        return;
+    }
+    let g = glyphs();
+    if already_ok {
+        println!(
+            "  {} {}  {}  {}",
+            paint(Style::Separator, "─"),
+            paint(Style::Label, verb),
+            subject,
+            paint(Style::Label, "(already present)")
+        );
+    } else if dry_run {
+        println!(
+            "  {} {}  {}",
+            paint(Style::Label, "would"),
+            paint(Style::Label, verb),
+            subject
+        );
+    } else {
+        println!(
+            "  {} {}  {}",
+            paint(Style::Ok, g.check),
+            paint(Style::Label, verb),
+            subject
+        );
+    }
 }
 
 /// Collect all entries under a directory (excluding root itself).
