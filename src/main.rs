@@ -33,6 +33,7 @@ mod perms;
 mod policy;
 mod presets;
 mod prune;
+mod render;
 mod snapshot;
 mod tree;
 mod types;
@@ -72,6 +73,11 @@ fn main() {
     .ok();
 
     let cli = Cli::parse();
+    // Presentation layer init. Color respects --color on commands that
+    // carry it (currently `tree`), otherwise follows autodetect (NO_COLOR,
+    // TERM=dumb, isatty). Glyph set is unicode unless $LANG says otherwise.
+    render::init_color(cli::ColorMode::Auto);
+    render::init_glyphs();
     match run(cli) {
         Ok(()) => {}
         Err(e) => {
