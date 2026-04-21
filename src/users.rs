@@ -1,8 +1,32 @@
 //! Username / UID / GID lookups and group-membership queries.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use nix::unistd::{Gid, Group, Uid, User};
 
 use crate::errors::{PmError, Result};
+
+// ── UID / GID name cache ───────────────────────────────────────────────
+//
+// `uid_to_name` / `gid_to_name` are called once per file in scan paths
+// (audit, find-orphans, tree). Each call opens /etc/passwd or /etc/group
+// and scans linearly — O(files × entries) total. Strace on 15k files:
+// 18 109 open("/etc/passwd") syscalls.
+//
+// We memoise by numeric id. Mutex-wrapped so a future rayon walker is
+// safe without refactor. `Option<String>` so "unknown uid" is also
+// cached (avoids repeated misses on orphan datasets).
+static UID_CACHE: OnceLock<Mutex<HashMap<u32, Option<String>>>> = OnceLock::new();
+static GID_CACHE: OnceLock<Mutex<HashMap<u32, Option<String>>>> = OnceLock::new();
+
+fn uid_cache() -> &'static Mutex<HashMap<u32, Option<String>>> {
+    UID_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn gid_cache() -> &'static Mutex<HashMap<u32, Option<String>>> {
+    GID_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 pub fn lookup_user(name: &str) -> Result<User> {
     User::from_name(name)
@@ -81,19 +105,61 @@ fn supplementary_gids(username: &str, primary_gid: Gid) -> Result<Vec<Gid>> {
 }
 
 /// Resolve a uid to a username, fallback to numeric string.
+///
+/// Cached: each unique uid triggers at most one `getpwuid` syscall.
 pub fn uid_to_name(uid: Uid) -> String {
-    User::from_uid(uid)
-        .ok()
-        .flatten()
-        .map(|u| u.name)
-        .unwrap_or_else(|| uid.to_string())
+    let raw = uid.as_raw();
+    let mut cache = uid_cache().lock().unwrap();
+    cache
+        .entry(raw)
+        .or_insert_with(|| User::from_uid(uid).ok().flatten().map(|u| u.name))
+        .clone()
+        .unwrap_or_else(|| raw.to_string())
 }
 
 /// Resolve a gid to a group name, fallback to numeric string.
+///
+/// Cached: each unique gid triggers at most one `getgrgid` syscall.
 pub fn gid_to_name(gid: Gid) -> String {
-    Group::from_gid(gid)
-        .ok()
-        .flatten()
-        .map(|g| g.name)
-        .unwrap_or_else(|| gid.to_string())
+    let raw = gid.as_raw();
+    let mut cache = gid_cache().lock().unwrap();
+    cache
+        .entry(raw)
+        .or_insert_with(|| Group::from_gid(gid).ok().flatten().map(|g| g.name))
+        .clone()
+        .unwrap_or_else(|| raw.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Repeated lookups for the same uid must not perform repeated
+    /// `getpwuid` calls. We can't strace from inside a test, but we can
+    /// verify the cache is populated after the first call.
+    #[test]
+    fn uid_cache_memoises_unknown_ids() {
+        // 999_999 is extremely unlikely to exist on a CI box; even if
+        // it does, the behaviour still proves memoisation.
+        let raw = 999_999u32;
+        let _ = uid_to_name(Uid::from_raw(raw));
+        let cache = uid_cache().lock().unwrap();
+        assert!(cache.contains_key(&raw), "uid cache should be populated");
+    }
+
+    #[test]
+    fn uid_cache_returns_consistent_value() {
+        let raw = 999_998u32;
+        let a = uid_to_name(Uid::from_raw(raw));
+        let b = uid_to_name(Uid::from_raw(raw));
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn gid_cache_memoises() {
+        let raw = 999_997u32;
+        let _ = gid_to_name(Gid::from_raw(raw));
+        let cache = gid_cache().lock().unwrap();
+        assert!(cache.contains_key(&raw));
+    }
 }
