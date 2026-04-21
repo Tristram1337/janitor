@@ -1,7 +1,7 @@
 //! `acl` subcommands: grant, revoke, strip, show (as a standalone facility
 //! on top of `setfacl` / `getfacl`).
 
-use crate::acl::{acl_modify, acl_remove, acl_strip, get_acl, get_default_acl};
+use crate::acl::{acl_modify, acl_remove, acl_strip, get_acl, get_default_acl, supports_acl};
 use crate::backup::save_backup;
 use crate::errors::{PmError, Result};
 use crate::helpers::{parse_access, resolve_path};
@@ -24,6 +24,9 @@ pub fn cmd_acl_grant(
         return Err(PmError::NoUserOrGroup);
     }
     let target = resolve_path(path)?;
+    if !supports_acl(&target) {
+        return Err(PmError::AclUnsupported { path: target });
+    }
     let bits = parse_access(access)?;
     let perm_str = format_perms(bits.0);
 
@@ -99,6 +102,9 @@ pub fn cmd_acl_revoke(
         return Err(PmError::NoUserOrGroup);
     }
     let target = resolve_path(path)?;
+    if !supports_acl(&target) {
+        return Err(PmError::AclUnsupported { path: target });
+    }
     let specs = build_remove_specs(user, group, default_acl);
 
     let mut paths = vec![target.clone()];
@@ -142,6 +148,9 @@ pub fn cmd_acl_revoke(
 /// `acl strip PATH [--recursive]`: remove all ACLs.
 pub fn cmd_acl_strip(path: &str, recursive: bool, dry_run: bool) -> Result<()> {
     let target = resolve_path(path)?;
+    if !supports_acl(&target) {
+        return Err(PmError::AclUnsupported { path: target });
+    }
     let mut paths = vec![target.clone()];
     if recursive && target.is_dir() {
         paths.extend(

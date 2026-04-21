@@ -45,6 +45,9 @@ pub enum PmError {
     #[error("{0}")]
     Json(#[from] serde_json::Error),
 
+    #[error("filesystem at {path} does not support POSIX ACLs\n       use regular `grant` / `chmod` instead, or remount with the `acl` mount option")]
+    AclUnsupported { path: PathBuf },
+
     #[error("{0}")]
     Other(String),
 }

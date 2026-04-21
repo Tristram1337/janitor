@@ -17,6 +17,48 @@ pub fn acl_available() -> bool {
     Path::new(GETFACL).exists() && Path::new(SETFACL).exists()
 }
 
+/// Check whether the filesystem backing `path` supports POSIX ACLs.
+///
+/// Uses `lgetxattr(path, "system.posix_acl_access", NULL, 0)`:
+///   * returns `ENOTSUP` / `EOPNOTSUPP` on filesystems without ACL
+///     support (overlayfs default, tmpfs on some kernel configs, NFS
+///     mounted without the `acl` option, …);
+///   * returns `ENODATA` when the FS supports ACLs but no ACL is set —
+///     this is the common case and means "yes";
+///   * returns a non-negative length when an ACL is already present —
+///     also "yes".
+///
+/// This must be called *before* writing a backup so that unsupported
+/// filesystems don't leave behind an orphaned snapshot (§3.11).
+pub fn supports_acl(path: &Path) -> bool {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = match CString::new(path.as_os_str().as_bytes()) {
+        Ok(s) => s,
+        Err(_) => return true, // can't check — let setfacl fail loudly later
+    };
+    let c_name = c"system.posix_acl_access";
+    let ret = unsafe {
+        libc::lgetxattr(
+            c_path.as_ptr(),
+            c_name.as_ptr(),
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if ret >= 0 {
+        return true;
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ENOTSUP) | Some(libc::EOPNOTSUPP) => false,
+        // ENODATA / ENOATTR: attribute absent, FS still supports ACLs.
+        // Anything else (ENOENT, EACCES, …): can't tell — assume yes
+        // and let the real setfacl surface the error.
+        _ => true,
+    }
+}
+
 /// Get the access ACL of a path in canonical (compact) form.
 /// Returns None if ACL tooling not installed or only the base mode is present.
 pub fn get_acl(path: &Path) -> Result<Option<String>> {
