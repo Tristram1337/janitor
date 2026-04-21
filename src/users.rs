@@ -130,6 +130,32 @@ pub fn gid_to_name(gid: Gid) -> String {
         .unwrap_or_else(|| raw.to_string())
 }
 
+/// Does a user with this uid exist in /etc/passwd (or NSS)?
+///
+/// Shares the UID_CACHE with `uid_to_name` — the first call fills the
+/// slot, every subsequent call for the same uid is a HashMap hit. On a
+/// `/` walk where 99 % of inodes are owned by root this cuts the
+/// per-inode cost from a `getpwuid` syscall to an atomic lock + lookup.
+pub fn uid_exists(uid: Uid) -> bool {
+    let raw = uid.as_raw();
+    let mut cache = uid_cache().lock().unwrap();
+    cache
+        .entry(raw)
+        .or_insert_with(|| User::from_uid(uid).ok().flatten().map(|u| u.name))
+        .is_some()
+}
+
+/// Does a group with this gid exist in /etc/group (or NSS)?
+/// See `uid_exists` for semantics.
+pub fn gid_exists(gid: Gid) -> bool {
+    let raw = gid.as_raw();
+    let mut cache = gid_cache().lock().unwrap();
+    cache
+        .entry(raw)
+        .or_insert_with(|| Group::from_gid(gid).ok().flatten().map(|g| g.name))
+        .is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

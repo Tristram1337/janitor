@@ -33,7 +33,11 @@ pub fn cmd_find(
         None
     };
     let t0 = Instant::now();
-    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo);
+    // Pipe-pure output has no ACL column; only probe if the filter
+    // itself needs it (so `find -A` still works). This is the dominant
+    // perf win on large trees.
+    let probe_acl = filter.has_acl;
+    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo, probe_acl);
     let elapsed_ms = t0.elapsed().as_millis();
     if let Some(sp) = spinner {
         render::finish_progress(&sp, &format!("scanned in {elapsed_ms} ms"));

@@ -12,7 +12,7 @@ use crate::errors::Result;
 use crate::helpers::resolve_path;
 use crate::matcher::ExcludeSet;
 use crate::render::{self, aligned_table, glyphs, paint, summary_line, Style};
-use crate::users::{gid_to_name, uid_to_name};
+use crate::users::{gid_exists, gid_to_name, uid_exists, uid_to_name};
 
 #[derive(Debug, Serialize)]
 pub struct AuditHit {
@@ -55,6 +55,7 @@ pub fn scan(
     filter: &AuditFilter,
     exclude: &ExcludeSet,
     include_pseudo: bool,
+    probe_acl: bool,
 ) -> (Vec<AuditHit>, usize) {
     let mut hits: Vec<AuditHit> = Vec::new();
     let mut pseudo_skipped = 0usize;
@@ -130,26 +131,27 @@ pub fn scan(
                 continue;
             }
         }
-        if filter.no_owner
-            && nix::unistd::User::from_uid(Uid::from_raw(uid))
-                .ok()
-                .flatten()
-                .is_some()
-        {
+        if filter.no_owner && uid_exists(Uid::from_raw(uid)) {
             continue;
         }
-        if filter.no_group
-            && nix::unistd::Group::from_gid(Gid::from_raw(gid))
-                .ok()
-                .flatten()
-                .is_some()
-        {
+        if filter.no_group && gid_exists(Gid::from_raw(gid)) {
             continue;
         }
-        let acl = has_extended_acl(p);
-        if filter.has_acl && !acl {
-            continue;
-        }
+        // ACL probe is a per-file `lgetxattr` syscall — cheap but on
+        // large trees it dominates wall time. Skip unless the caller
+        // actually needs the ACL bit (audit table column, or
+        // `filter.has_acl`). Pipe-pure `find` leaves `probe_acl=false`.
+        let acl = if filter.has_acl {
+            let v = has_extended_acl(p);
+            if !v {
+                continue;
+            }
+            true
+        } else if probe_acl {
+            has_extended_acl(p)
+        } else {
+            false
+        };
 
         hits.push(AuditHit {
             path: p.display().to_string(),
@@ -174,7 +176,7 @@ pub fn cmd_audit(
 ) -> Result<()> {
     let root = resolve_path(path)?;
     let t0 = Instant::now();
-    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo);
+    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo, true);
     let elapsed_ms = t0.elapsed().as_millis();
     if pseudo_skipped > 0 {
         eprintln!(
@@ -311,7 +313,7 @@ pub fn cmd_audit_fix(
     include_pseudo: bool,
 ) -> Result<()> {
     let root = resolve_path(path)?;
-    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo);
+    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo, true);
     if pseudo_skipped > 0 {
         eprintln!(
             "info: skipped {} pseudo-filesystem mount point(s) (use --include-pseudo to include)",
@@ -382,14 +384,8 @@ pub fn cmd_find_orphans(path: &str, as_json: bool, include_pseudo: bool) -> Resu
         };
         let uid = md.uid();
         let gid = md.gid();
-        let has_u = nix::unistd::User::from_uid(Uid::from_raw(uid))
-            .ok()
-            .flatten()
-            .is_some();
-        let has_g = nix::unistd::Group::from_gid(Gid::from_raw(gid))
-            .ok()
-            .flatten()
-            .is_some();
+        let has_u = uid_exists(Uid::from_raw(uid));
+        let has_g = gid_exists(Gid::from_raw(gid));
         let kind = match (has_u, has_g) {
             (true, true) => continue,
             (false, false) => "uid+gid",
