@@ -161,6 +161,56 @@ fn fnv1a_hex8(bytes: &[u8]) -> String {
     format!("{:08x}", (h as u32))
 }
 
+// ── Pseudo-filesystem detection (§3.16) ───────────────────────────────
+//
+// Magic numbers from <linux/magic.h>. `statfs.f_type` is `i64` on glibc
+// (via libc::__fsword_t) but the constants are the same regardless of
+// platform word size.
+const PSEUDO_FS_MAGIC: &[i64] = &[
+    0x9fa0,       // PROC_SUPER_MAGIC        /proc
+    0x62656572,   // SYSFS_MAGIC             /sys
+    0x01021994,   // TMPFS_MAGIC             /tmp, /run, /dev/shm, /dev (devtmpfs)
+    0x1cd1,       // DEVPTS_SUPER_MAGIC      /dev/pts
+    0x27e0eb,     // CGROUP_SUPER_MAGIC
+    0x63677270,   // CGROUP2_SUPER_MAGIC
+    0x19800202,   // MQUEUE_MAGIC
+    0x64626720,   // DEBUGFS_MAGIC
+    0x74726163,   // TRACEFS_MAGIC
+    0x62656570,   // CONFIGFS_MAGIC
+    0x858458f6u32 as i64, // RAMFS_MAGIC
+    0x958458f6u32 as i64, // HUGETLBFS_MAGIC
+    0x6165676C,   // PSTOREFS_MAGIC
+    0xcafe4a11u32 as i64, // BPF_FS_MAGIC
+    0x65735543,   // FUSECTL_SUPER_MAGIC
+    0x42494e4d,   // BINFMTFS_MAGIC
+    0x67596969,   // RPC_PIPEFS_SUPER_MAGIC
+    0x6e667364,   // NFSD_MAGIC
+    0x0187,       // AUTOFS_SUPER_MAGIC
+    0x73636673,   // SECURITYFS_MAGIC
+    0xf97cff8cu32 as i64, // SELINUX_MAGIC
+    0x6e736673,   // NSFS_MAGIC
+];
+
+/// Return true if `path` resides on a kernel-managed pseudo-filesystem
+/// (see `PSEUDO_FS_MAGIC`). Used by scan commands (audit, find-orphans,
+/// find) to skip /proc /sys /dev etc., where "orphan" UIDs are usually
+/// LXC user-namespace remappings rather than leftover accounts.
+pub fn is_pseudo_fs(path: &Path) -> bool {
+    use std::ffi::CString;
+    use std::os::unix::ffi::OsStrExt;
+
+    let c_path = match CString::new(path.as_os_str().as_bytes()) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let mut sb: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c_path.as_ptr(), &mut sb) } != 0 {
+        return false;
+    }
+    let fs_type = sb.f_type as i64;
+    PSEUDO_FS_MAGIC.contains(&fs_type)
+}
+
 /// Read extra paths from stdin (NUL-separated if `stdin0`) and/or a file
 /// (newline-separated; `-` means stdin). Extends `base` with them.
 pub fn read_extra_paths(
@@ -290,5 +340,29 @@ mod tests {
         let a = default_group_name(Path::new("/srv/project_a"));
         let b = default_group_name(Path::new("/srv/project_b"));
         assert_ne!(a, b);
+    }
+
+    // ── §3.16 regression: pseudo-FS detection ──────────────────────────
+
+    /// /proc is always a pseudo-filesystem on Linux.
+    #[test]
+    fn is_pseudo_fs_detects_proc() {
+        assert!(is_pseudo_fs(Path::new("/proc")));
+    }
+
+    /// /sys is always a pseudo-filesystem on Linux.
+    #[test]
+    fn is_pseudo_fs_detects_sys() {
+        assert!(is_pseudo_fs(Path::new("/sys")));
+    }
+
+    /// A non-existent path can't be probed; `statfs` fails and we
+    /// conservatively report `false` (i.e. don't skip — let the real
+    /// code path emit a proper error).
+    #[test]
+    fn is_pseudo_fs_false_for_missing_path() {
+        assert!(!is_pseudo_fs(Path::new(
+            "/definitely/does/not/exist/here/at/all"
+        )));
     }
 }

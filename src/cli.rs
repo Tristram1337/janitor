@@ -403,6 +403,11 @@ Common recipes:\n  \
         /// Skip any path matching this glob (repeatable).
         #[arg(short = 'E', long = "exclude", value_name = "GLOB")]
         exclude: Vec<String>,
+        /// Descend into pseudo-filesystems (/proc, /sys, /dev, cgroup, …).
+        /// By default they are skipped because their inodes are kernel-
+        /// generated and never "orphaned" in the sense the user means.
+        #[arg(long = "include-pseudo")]
+        include_pseudo: bool,
         /// Apply an action to every match, in one transaction with a single snapshot.
         /// Supported: `chmod MODE`, `chown SPEC`, `strip-world-write`, `strip-setuid`,
         /// `strip-setgid`, `strip-sticky`, `preset NAME`.
@@ -414,6 +419,9 @@ Common recipes:\n  \
     FindOrphans {
         /// Root of the scan.
         path: String,
+        /// Descend into pseudo-filesystems (/proc, /sys, /dev, cgroup, …).
+        #[arg(long = "include-pseudo")]
+        include_pseudo: bool,
     },
 
     /// Reverse access query: which users can read / write / exec PATH.
@@ -495,6 +503,9 @@ Example: `janitor find /srv -mode 777 -0 | sudo janitor chmod --stdin0 750`"
         /// Skip paths matching this glob (repeatable).
         #[arg(short = 'E', long = "exclude", value_name = "GLOB")]
         exclude: Vec<String>,
+        /// Descend into pseudo-filesystems (/proc, /sys, /dev, cgroup, …).
+        #[arg(long = "include-pseudo")]
+        include_pseudo: bool,
         /// Output NUL-separated (pair with `chmod --stdin0`).
         #[arg(short = '0', long = "print0")]
         print0: bool,

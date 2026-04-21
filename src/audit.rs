@@ -45,13 +45,36 @@ pub struct AuditFilter<'a> {
 
 /// Low-level scan: returns matching hits. Shared by `audit`, `find`, and
 /// `audit --fix`.
-pub fn scan(path: &Path, filter: &AuditFilter, exclude: &ExcludeSet) -> Vec<AuditHit> {
+///
+/// When `include_pseudo == false`, entries on kernel pseudo-filesystems
+/// (/proc /sys /dev cgroupfs tmpfs etc. — see `helpers::is_pseudo_fs`)
+/// are skipped. Callers that need raw inode listings (policy audits on
+/// /proc, for example) can opt back in.
+pub fn scan(
+    path: &Path,
+    filter: &AuditFilter,
+    exclude: &ExcludeSet,
+    include_pseudo: bool,
+) -> (Vec<AuditHit>, usize) {
     let mut hits: Vec<AuditHit> = Vec::new();
-    for entry in walkdir::WalkDir::new(path)
+    let mut pseudo_skipped = 0usize;
+    let walker = walkdir::WalkDir::new(path)
         .follow_links(false)
         .into_iter()
-        .filter_map(|e| e.ok())
-    {
+        .filter_entry(|e| {
+            if include_pseudo {
+                return true;
+            }
+            // Only test directory boundaries; testing every file would
+            // dominate walk time. statfs at a mount point is enough to
+            // prune the entire subtree.
+            if e.file_type().is_dir() && crate::helpers::is_pseudo_fs(e.path()) {
+                pseudo_skipped += 1;
+                return false;
+            }
+            true
+        });
+    for entry in walker.filter_map(|e| e.ok()) {
         let p = entry.path();
         if exclude.is_excluded(p) {
             continue;
@@ -139,7 +162,7 @@ pub fn scan(path: &Path, filter: &AuditFilter, exclude: &ExcludeSet) -> Vec<Audi
             size: md.len(),
         });
     }
-    hits
+    (hits, pseudo_skipped)
 }
 
 pub fn cmd_audit(
@@ -147,11 +170,18 @@ pub fn cmd_audit(
     filter: &AuditFilter,
     exclude: &ExcludeSet,
     as_json: bool,
+    include_pseudo: bool,
 ) -> Result<()> {
     let root = resolve_path(path)?;
     let t0 = Instant::now();
-    let hits = scan(&root, filter, exclude);
+    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo);
     let elapsed_ms = t0.elapsed().as_millis();
+    if pseudo_skipped > 0 {
+        eprintln!(
+            "info: skipped {} pseudo-filesystem mount point(s) (use --include-pseudo to include)",
+            pseudo_skipped
+        );
+    }
 
     if as_json {
         println!(
@@ -278,9 +308,16 @@ pub fn cmd_audit_fix(
     exclude: &ExcludeSet,
     action: &str,
     dry_run: bool,
+    include_pseudo: bool,
 ) -> Result<()> {
     let root = resolve_path(path)?;
-    let hits = scan(&root, filter, exclude);
+    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo);
+    if pseudo_skipped > 0 {
+        eprintln!(
+            "info: skipped {} pseudo-filesystem mount point(s) (use --include-pseudo to include)",
+            pseudo_skipped
+        );
+    }
     if hits.is_empty() {
         println!("(no matches; nothing to fix)");
         return Ok(());
@@ -319,15 +356,25 @@ pub fn cmd_audit_fix(
 }
 
 /// `find-orphans`: files with non-existent owner/group.
-pub fn cmd_find_orphans(path: &str, as_json: bool) -> Result<()> {
+pub fn cmd_find_orphans(path: &str, as_json: bool, include_pseudo: bool) -> Result<()> {
     let root = resolve_path(path)?;
     let t0 = Instant::now();
     let mut hits: Vec<(AuditHit, &'static str)> = Vec::new();
-    for entry in walkdir::WalkDir::new(&root)
+    let mut pseudo_skipped = 0usize;
+    let walker = walkdir::WalkDir::new(&root)
         .follow_links(false)
         .into_iter()
-        .filter_map(|e| e.ok())
-    {
+        .filter_entry(|e| {
+            if include_pseudo {
+                return true;
+            }
+            if e.file_type().is_dir() && crate::helpers::is_pseudo_fs(e.path()) {
+                pseudo_skipped += 1;
+                return false;
+            }
+            true
+        });
+    for entry in walker.filter_map(|e| e.ok()) {
         let p = entry.path();
         let md = match entry.metadata() {
             Ok(m) => m,
@@ -364,6 +411,12 @@ pub fn cmd_find_orphans(path: &str, as_json: bool) -> Result<()> {
         ));
     }
     let elapsed_ms = t0.elapsed().as_millis();
+    if pseudo_skipped > 0 {
+        eprintln!(
+            "info: skipped {} pseudo-filesystem mount point(s) (use --include-pseudo to include)",
+            pseudo_skipped
+        );
+    }
 
     if as_json {
         let simple: Vec<&AuditHit> = hits.iter().map(|(h, _)| h).collect();

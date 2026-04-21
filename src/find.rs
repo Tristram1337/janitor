@@ -22,6 +22,7 @@ pub fn cmd_find(
     print0: bool,
     count: bool,
     head: Option<usize>,
+    include_pseudo: bool,
 ) -> Result<()> {
     let root = resolve_path(path)?;
 
@@ -32,10 +33,16 @@ pub fn cmd_find(
         None
     };
     let t0 = Instant::now();
-    let hits = scan(&root, filter, exclude);
+    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo);
     let elapsed_ms = t0.elapsed().as_millis();
     if let Some(sp) = spinner {
         render::finish_progress(&sp, &format!("scanned in {elapsed_ms} ms"));
+    }
+    if pseudo_skipped > 0 {
+        eprintln!(
+            "info: skipped {} pseudo-filesystem mount point(s) (use --include-pseudo to include)",
+            pseudo_skipped
+        );
     }
 
     if count {

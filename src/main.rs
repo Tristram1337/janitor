@@ -225,6 +225,7 @@ fn run(cli: Cli) -> errors::Result<()> {
             no_owner,
             no_group,
             exclude,
+            include_pseudo,
             fix,
         } => {
             let mode_num = match mode {
@@ -249,11 +250,11 @@ fn run(cli: Cli) -> errors::Result<()> {
             };
             let ex = matcher::ExcludeSet::new(&exclude)?;
             match fix {
-                Some(action) => audit::cmd_audit_fix(&path, &filter, &ex, &action, dry_run),
-                None => audit::cmd_audit(&path, &filter, &ex, json),
+                Some(action) => audit::cmd_audit_fix(&path, &filter, &ex, &action, dry_run, include_pseudo),
+                None => audit::cmd_audit(&path, &filter, &ex, json, include_pseudo),
             }
         }
-        Command::FindOrphans { path } => audit::cmd_find_orphans(&path, json),
+        Command::FindOrphans { path, include_pseudo } => audit::cmd_find_orphans(&path, json, include_pseudo),
         Command::WhoCan { path } => whocan::cmd_who_can(&path, json),
         Command::Info { path, for_user } => info::cmd_info(&path, for_user.as_deref()),
         Command::Acl(sub) => match sub {
@@ -322,6 +323,7 @@ fn run(cli: Cli) -> errors::Result<()> {
             group,
             has_acl,
             exclude,
+            include_pseudo,
             print0,
             count,
             head,
@@ -347,7 +349,7 @@ fn run(cli: Cli) -> errors::Result<()> {
                 no_group: false,
             };
             let ex = matcher::ExcludeSet::new(&exclude)?;
-            find::cmd_find(&path, &filter, &ex, print0, count, head)
+            find::cmd_find(&path, &filter, &ex, print0, count, head, include_pseudo)
         }
         Command::Explain { path, for_user } => explain::cmd_explain(&path, for_user.as_deref()),
         Command::Compare { a, b, recursive } => compare::cmd_compare(&a, &b, recursive),
