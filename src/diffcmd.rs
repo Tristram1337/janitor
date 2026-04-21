@@ -4,10 +4,13 @@
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 
+use nix::unistd::{Gid, Uid};
 use serde::Serialize;
 
 use crate::backup::load_backup;
 use crate::errors::Result;
+use crate::render::{paint, summary_line, Style};
+use crate::users::{gid_to_name, uid_to_name};
 
 #[derive(Debug, Serialize)]
 pub struct DiffEntry {
@@ -55,37 +58,68 @@ pub fn cmd_diff(backup_id: &str, as_json: bool) -> Result<()> {
             "{}",
             serde_json::to_string_pretty(&diffs).unwrap_or_else(|_| "[]".into())
         );
-    } else if diffs.is_empty() {
+        return Ok(());
+    }
+
+    if diffs.is_empty() {
         println!(
-            "(no differences between backup {} and current state)",
-            backup_id
+            "{}",
+            paint(
+                Style::Label,
+                &format!("(no differences between backup {backup_id} and current state)")
+            )
         );
-    } else {
-        println!("diff for backup: {}", backup_id);
-        println!(
-            "{:>4}  {:>4}  {:>8}→{:>8}  {:>5}→{:>5}  {:>5}→{:>5}  {}",
-            "acl", "?", "mode", "mode", "uid", "uid", "gid", "gid", "path"
-        );
-        for d in &diffs {
+        return Ok(());
+    }
+
+    println!();
+    println!(
+        "  {}  {}",
+        paint(Style::Primary, "diff"),
+        paint(Style::Label, &format!("backup {backup_id}  →  current state"))
+    );
+    println!();
+    for d in &diffs {
+        println!("  {}", paint(Style::Primary, &d.path));
+        let cur_mode = d.current_mode.as_deref().unwrap_or("----");
+        if cur_mode != d.snapshot_mode {
             println!(
-                "{:>4}  {:>4}  {:>8}→{:>8}  {:>5}→{:>5}  {:>5}→{:>5}  {}",
-                if d.has_acl_change { "YES" } else { "-" },
-                "",
-                d.current_mode.as_deref().unwrap_or("---"),
-                d.snapshot_mode,
-                d.current_uid
-                    .map(|u| u.to_string())
-                    .unwrap_or_else(|| "-".into()),
-                d.snapshot_uid,
-                d.current_gid
-                    .map(|g| g.to_string())
-                    .unwrap_or_else(|| "-".into()),
-                d.snapshot_gid,
-                d.path
+                "      mode   {} {} {}",
+                paint(Style::Primary, &d.snapshot_mode),
+                paint(Style::Separator, "→"),
+                paint(Style::Primary, cur_mode)
             );
         }
-        eprintln!("({} entr(ies) differ)", diffs.len());
+        let snap_user = uid_to_name(Uid::from_raw(d.snapshot_uid));
+        let snap_group = gid_to_name(Gid::from_raw(d.snapshot_gid));
+        let cur_user = d
+            .current_uid
+            .map(|u| uid_to_name(Uid::from_raw(u)))
+            .unwrap_or_else(|| "-".into());
+        let cur_group = d
+            .current_gid
+            .map(|g| gid_to_name(Gid::from_raw(g)))
+            .unwrap_or_else(|| "-".into());
+        if d.current_uid != Some(d.snapshot_uid) || d.current_gid != Some(d.snapshot_gid) {
+            println!(
+                "      owner  {}:{} {} {}:{}",
+                paint(Style::User, &snap_user),
+                paint(Style::Group, &snap_group),
+                paint(Style::Separator, "→"),
+                paint(Style::User, &cur_user),
+                paint(Style::Group, &cur_group)
+            );
+        }
+        if d.has_acl_change {
+            println!(
+                "      acl    {}",
+                paint(Style::AclMarker, "snapshot has ACL (will be restored)")
+            );
+        }
     }
+    let n = diffs.len().to_string();
+    let segs: Vec<(&str, &str)> = vec![(n.as_str(), if diffs.len() == 1 { "entry differs" } else { "entries differ" })];
+    eprintln!("{}", summary_line(&segs));
     Ok(())
 }
 
@@ -115,15 +149,15 @@ pub fn cmd_export(backup_id: &str, as_json: bool) -> Result<()> {
         println!("entries: {}", data.entries.len());
         println!();
         println!(
-            "{:>6}  {:>5}  {:>5}  {:>3}  {:>3}  {}",
-            "mode", "uid", "gid", "sym", "acl", "path"
+            "{:>6}  {:>10}  {:>10}  {:>3}  {:>3}  {}",
+            "mode", "owner", "group", "sym", "acl", "path"
         );
         for e in &data.entries {
             println!(
-                "{:06o}  {:>5}  {:>5}  {:>3}  {:>3}  {}",
+                "{:06o}  {:>10}  {:>10}  {:>3}  {:>3}  {}",
                 e.perm,
-                e.uid,
-                e.gid,
+                uid_to_name(Uid::from_raw(e.uid)),
+                gid_to_name(Gid::from_raw(e.gid)),
                 if e.is_symlink { "yes" } else { "-" },
                 if e.acl.is_some() { "yes" } else { "-" },
                 e.path.display()
