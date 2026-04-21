@@ -142,8 +142,13 @@ pub fn cmd_info(path: &str, for_user: Option<&str>) -> Result<()> {
         } else {
             std::path::PathBuf::from(path)
         };
-        if expanded.symlink_metadata().is_err() {
-            return Err(crate::errors::PmError::PathNotFound(expanded));
+        if let Err(e) = expanded.symlink_metadata() {
+            return Err(match e.kind() {
+                std::io::ErrorKind::PermissionDenied => {
+                    crate::errors::PmError::PathInaccessible(expanded)
+                }
+                _ => crate::errors::PmError::PathNotFound(expanded),
+            });
         }
         expanded
     };

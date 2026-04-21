@@ -87,6 +87,22 @@ pub fn scan(
         let mode = md.mode() & 0o7777;
         let uid = md.uid();
         let gid = md.gid();
+        let is_symlink = md.file_type().is_symlink();
+
+        // Symlink mode bits are ignored by the kernel (lrwxrwxrwx is
+        // literally fixed on Linux); actual access is evaluated on the
+        // target. Reporting symlinks under --world-writable et al. is a
+        // noise false-positive, so skip them for every mode-bit filter.
+        if is_symlink
+            && (filter.world_writable
+                || filter.world_readable
+                || filter.world_executable
+                || filter.setuid
+                || filter.setgid
+                || filter.sticky)
+        {
+            continue;
+        }
 
         if filter.world_writable && (mode & 0o002) == 0 {
             continue;

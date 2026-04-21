@@ -8,6 +8,9 @@ pub enum PmError {
     #[error("path does not exist: {0}")]
     PathNotFound(PathBuf),
 
+    #[error("cannot access {0}: permission denied (missing search permission on a parent directory)\n       (try sudo)")]
+    PathInaccessible(PathBuf),
+
     #[error("--access must be a non-empty combination of r/w/x (got {0:?})")]
     BadAccess(String),
 

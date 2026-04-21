@@ -25,6 +25,11 @@ pub fn parse_access(s: &str) -> Result<AccessBits> {
 }
 
 /// Resolve a path: expand `~`, canonicalize, fail if missing.
+///
+/// Distinguishes ENOENT ("does not exist") from EACCES ("exists but
+/// you lack search permission on a parent") — conflating them gives
+/// misleading errors when running unprivileged against paths whose
+/// ancestors are mode 700 for someone else.
 pub fn resolve_path(p: &str) -> Result<PathBuf> {
     let expanded = if p.starts_with('~') {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());
@@ -32,9 +37,13 @@ pub fn resolve_path(p: &str) -> Result<PathBuf> {
     } else {
         PathBuf::from(p)
     };
-    expanded
-        .canonicalize()
-        .map_err(|_| PmError::PathNotFound(expanded))
+    match expanded.canonicalize() {
+        Ok(p) => Ok(p),
+        Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+            Err(PmError::PathInaccessible(expanded))
+        }
+        Err(_) => Err(PmError::PathNotFound(expanded)),
+    }
 }
 
 /// Return every path segment from (but not including) `stop_at` down to
