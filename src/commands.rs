@@ -415,23 +415,13 @@ pub fn cmd_backup(path: &str, recursive: bool, capture_acl: bool) -> Result<()> 
     })
 }
 
-pub fn cmd_restore(backup_id: &str, dry_run: bool) -> Result<()> {
+pub fn cmd_restore(backup_id: &str, dry_run: bool, assume_yes: bool) -> Result<()> {
     let data = load_backup(backup_id)?;
-    println!(
-        "restoring {backup_id} (op: {}, {} entries)",
-        data.operation.op_type,
-        data.entries.len()
-    );
-    let errors = apply_restore(&data.entries, dry_run);
-    if errors > 0 {
-        Err(PmError::Other(format!("{errors} error(s) during restore")))
-    } else {
-        Ok(())
-    }
+    restore_with_preview(&data, dry_run, assume_yes, "restore")
 }
 
 /// Undo the most recent backup (newest by file mtime).
-pub fn cmd_undo(dry_run: bool) -> Result<()> {
+pub fn cmd_undo(dry_run: bool, assume_yes: bool) -> Result<()> {
     let files = crate::backup::list_backup_files()?;
     let latest = files
         .iter()
@@ -440,14 +430,181 @@ pub fn cmd_undo(dry_run: bool) -> Result<()> {
                 .and_then(|m| m.modified())
                 .unwrap_or(std::time::UNIX_EPOCH)
         })
-        .ok_or_else(|| PmError::Other("no backups to undo".into()))?;
+        .ok_or_else(|| PmError::Other("no backups to undo  (try `janitor list-backups`)".into()))?;
     let bid = latest
         .file_stem()
         .and_then(|s| s.to_str())
         .ok_or_else(|| PmError::Other("invalid backup filename".into()))?
         .to_string();
-    println!("undo: restoring latest backup {bid}");
-    cmd_restore(&bid, dry_run)
+    let data = load_backup(&bid)?;
+    restore_with_preview(&data, dry_run, assume_yes, "undo")
+}
+
+fn restore_with_preview(
+    data: &crate::types::Backup,
+    dry_run: bool,
+    assume_yes: bool,
+    verb: &str,
+) -> Result<()> {
+    let stdout_tty = is_terminal::is_terminal(std::io::stdout());
+    let g = glyphs();
+
+    // Age / stale warning.
+    let age_str = backup_age(&data.timestamp);
+    let is_stale = backup_age_hours(&data.timestamp).unwrap_or(0) > 24;
+
+    if stdout_tty {
+        println!(
+            "\n  {} {}  {}",
+            paint(Style::Separator, g.header_marker),
+            paint(Style::Primary, &format!("janitor {verb}")),
+            paint(Style::Primary, &data.id)
+        );
+        println!();
+        println!("  {}", paint(Style::Label, "target operation"));
+        println!(
+            "    id:         {}",
+            paint(Style::Primary, &data.id)
+        );
+        println!(
+            "    created:    {}  {}",
+            paint(Style::Primary, &data.timestamp),
+            paint(Style::Label, &format!("({} ago)", age_str))
+        );
+        println!(
+            "    operation:  {}",
+            paint(Style::Primary, &format_op_summary(&data.operation))
+        );
+        println!(
+            "    entries:    {} {}",
+            paint(Style::Primary, &data.entries.len().to_string()),
+            paint(Style::Label, "paths")
+        );
+        if is_stale {
+            println!();
+            render::eprint_diag(
+                DiagLevel::Warning,
+                &format!("backup is {} old — state may have drifted since it was taken.", age_str),
+                Some("review the diff below carefully."),
+                &[],
+            );
+        }
+    } else {
+        println!("{verb} {} (op: {}, {} entries)", data.id, data.operation.op_type, data.entries.len());
+    }
+
+    // Compute and show the diff preview (current vs. recorded state).
+    let diffs = crate::perms::preview_restore(&data.entries);
+    if stdout_tty {
+        println!();
+        println!(
+            "  {} {}",
+            paint(Style::Label, "changes"),
+            paint(Style::Label, &format!("({} entries)", diffs.len()))
+        );
+        let max_show = 20;
+        for (i, line) in diffs.iter().enumerate() {
+            if i >= max_show {
+                println!(
+                    "    {} ... and {} more",
+                    paint(Style::Separator, "…"),
+                    diffs.len() - max_show
+                );
+                break;
+            }
+            println!("    {}", line);
+        }
+        if diffs.is_empty() {
+            println!("    {}", paint(Style::Label, "(no changes — current state matches backup)"));
+        }
+    }
+
+    // Confirm.
+    if !dry_run && !diffs.is_empty() && !assume_yes {
+        if !stdout_tty {
+            return Err(PmError::Other(
+                "refusing to apply non-dry-run restore without --yes on a pipe".into(),
+            ));
+        }
+        println!();
+        print!("  Proceed?  [y/N]: ");
+        use std::io::Write;
+        std::io::stdout().flush().ok();
+        let mut reply = String::new();
+        std::io::stdin().read_line(&mut reply).ok();
+        let ok = reply.trim().eq_ignore_ascii_case("y") || reply.trim().eq_ignore_ascii_case("yes");
+        if !ok {
+            println!("  {}", paint(Style::Label, "cancelled."));
+            return Ok(());
+        }
+    }
+
+    let errors = apply_restore(&data.entries, dry_run);
+    if errors > 0 {
+        return Err(PmError::Other(format!("{errors} error(s) during restore")));
+    }
+    if stdout_tty && !dry_run {
+        println!();
+        println!(
+            "  {} {}: {}  ({} entries)",
+            paint(Style::Ok, g.check),
+            paint(Style::Label, &format!("{verb} applied")),
+            paint(Style::Primary, &data.id),
+            data.entries.len()
+        );
+        println!(
+            "  {}",
+            paint(
+                Style::Label,
+                "note: the reverse operation creates no new backup."
+            )
+        );
+    } else if !stdout_tty && !dry_run {
+        println!("backup: {}", data.id);
+    }
+    Ok(())
+}
+
+fn format_op_summary(op: &crate::types::Operation) -> String {
+    let mut parts = vec![op.op_type.clone()];
+    if let Some(a) = &op.access {
+        parts.push(a.clone());
+    }
+    if let Some(u) = &op.user {
+        parts.push(format!("(user {u})"));
+    }
+    if let Some(t) = &op.target {
+        parts.push(t.clone());
+    }
+    parts.join(" ")
+}
+
+/// Returns something like "2h 14m ago" or "3d" etc.
+fn backup_age(ts: &str) -> String {
+    let now = chrono::Utc::now();
+    let when = chrono::DateTime::parse_from_rfc3339(ts)
+        .map(|d| d.with_timezone(&chrono::Utc))
+        .unwrap_or(now);
+    let d = now.signed_duration_since(when);
+    let secs = d.num_seconds().max(0);
+    if secs < 60 {
+        format!("{}s", secs)
+    } else if secs < 3600 {
+        format!("{}m", secs / 60)
+    } else if secs < 86_400 {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
+    } else if secs < 86_400 * 30 {
+        format!("{}d", secs / 86_400)
+    } else {
+        format!("{}mo", secs / (86_400 * 30))
+    }
+}
+
+fn backup_age_hours(ts: &str) -> Option<i64> {
+    let now = chrono::Utc::now();
+    chrono::DateTime::parse_from_rfc3339(ts)
+        .ok()
+        .map(|d| now.signed_duration_since(d.with_timezone(&chrono::Utc)).num_hours())
 }
 
 /// Parse `1h`, `30m`, `2d`, `1w`, `45s` into a `chrono::Duration`.
@@ -544,22 +701,37 @@ pub fn cmd_history(path: &str, since: Option<&str>, as_json: bool) -> Result<()>
         return Ok(());
     }
     if rows.is_empty() {
-        println!("(no backups touching {path})");
+        println!("{}", paint(Style::Label, &format!("(no backups touching {path})")));
         return Ok(());
     }
+    let stdout_tty = is_terminal::is_terminal(std::io::stdout());
+    if !stdout_tty {
+        // pipe mode: id per line
+        for b in &rows {
+            println!("{}", b.id);
+        }
+        return Ok(());
+    }
+    println!();
     println!(
-        "{:25}  {:19}  {:22}  {:10}  target",
-        "id", "timestamp", "type", "user"
+        "  {}",
+        paint(
+            Style::Primary,
+            &format!("history for {path}  ({} operation{})", rows.len(), if rows.len() == 1 { "" } else { "s" })
+        )
     );
-    println!("{}", "-".repeat(110));
+    println!();
     for b in &rows {
+        let age = backup_age(&b.timestamp);
+        let op_sum = format_op_summary(&b.operation);
+        let user = b.operation.user.as_deref().unwrap_or("-");
         println!(
-            "{:25}  {:19}  {:22}  {:10}  {}",
-            b.id,
-            b.timestamp,
-            b.operation.op_type,
-            b.operation.user.as_deref().unwrap_or("-"),
-            b.operation.target.as_deref().unwrap_or("-"),
+            "  {:>8}  {:<40}  {}  {}  {}",
+            paint(Style::Label, &format!("{age} ago")),
+            paint(Style::Primary, &op_sum),
+            paint(Style::Label, &format!("(by {user})")),
+            paint(Style::Label, &format!("{} entries", b.entries.len())),
+            paint(Style::Primary, &format!("…{}", b.id.rsplit('-').next().unwrap_or(&b.id)))
         );
     }
     Ok(())
@@ -568,14 +740,41 @@ pub fn cmd_history(path: &str, since: Option<&str>, as_json: bool) -> Result<()>
 pub fn cmd_lock(path: &str, reason: Option<&str>) -> Result<()> {
     let p = resolve_path(path)?;
     crate::locks::add(&p, reason)?;
-    println!("locked: {}", p.display());
+    let g = glyphs();
+    println!(
+        "  {} {}  {}",
+        paint(Style::Ok, g.check),
+        paint(Style::Label, "locked"),
+        paint(Style::Primary, &p.display().to_string())
+    );
+    if let Some(r) = reason {
+        println!(
+            "     {}  {}",
+            paint(Style::Label, "reason:"),
+            paint(Style::Primary, r)
+        );
+    }
+    println!(
+        "     {}  {}",
+        paint(Style::Label, "note:  "),
+        paint(
+            Style::Label,
+            "grant / chmod / chown on this path will now fail fast."
+        )
+    );
     Ok(())
 }
 
 pub fn cmd_unlock(path: &str) -> Result<()> {
     let p = resolve_path(path)?;
     crate::locks::remove(&p)?;
-    println!("unlocked: {}", p.display());
+    let g = glyphs();
+    println!(
+        "  {} {}  {}",
+        paint(Style::Ok, g.check),
+        paint(Style::Label, "unlocked"),
+        paint(Style::Primary, &p.display().to_string())
+    );
     Ok(())
 }
 
@@ -593,14 +792,24 @@ pub fn cmd_locks(as_json: bool) -> Result<()> {
         return Ok(());
     }
     if locks.is_empty() {
-        println!("(no active locks)");
+        println!("{}", paint(Style::Label, "(no active locks)"));
         return Ok(());
     }
-    println!("{:60}  reason", "path");
-    println!("{}", "-".repeat(90));
+    println!();
+    println!(
+        "  {}  {}",
+        paint(Style::Primary, "active locks"),
+        paint(Style::Label, &format!("({})", locks.len()))
+    );
+    println!();
     for l in &locks {
-        println!("{:60}  {}", l.path.display(), l.reason);
+        println!(
+            "    {}  {}",
+            paint(Style::Primary, &l.path.display().to_string()),
+            paint(Style::Label, &format!("— {}", l.reason))
+        );
     }
+    println!();
     Ok(())
 }
 
@@ -659,11 +868,13 @@ pub fn cmd_list_backups(as_json: bool, path_substr: Option<&str>) -> Result<()> 
         return Ok(());
     }
     if files.is_empty() {
-        println!("(no backups in {})", crate::config::backup_root().display());
+        println!("{}", paint(Style::Label, &format!("(no backups in {})", crate::config::backup_root().display())));
         return Ok(());
     }
-    println!("{:25}  {:22}  {:10}  target", "id", "type", "user");
-    println!("{}", "-".repeat(100));
+    let stdout_tty = is_terminal::is_terminal(std::io::stdout());
+    // Collect rows first.
+    let mut rows: Vec<(String, String, String, String, usize)> = Vec::new(); // (id, age, op_summary, when, entries)
+    let mut corrupt: Vec<String> = Vec::new();
     for f in &files {
         let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
         let read_result: std::result::Result<crate::types::Backup, String> = match ext {
@@ -684,19 +895,59 @@ pub fn cmd_list_backups(as_json: bool, path_substr: Option<&str>) -> Result<()> 
                 if !matches_filter(&data) {
                     continue;
                 }
-                println!(
-                    "{:25}  {:22}  {:10}  {}",
-                    data.id,
-                    data.operation.op_type,
-                    data.operation.user.as_deref().unwrap_or("-"),
-                    data.operation.target.as_deref().unwrap_or("-"),
-                );
+                let age = backup_age(&data.timestamp);
+                let when = data.timestamp.clone();
+                let op_sum = format_op_summary(&data.operation);
+                rows.push((data.id, age, op_sum, when, data.entries.len()));
             }
             Err(e) => {
                 let stem = f.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
-                println!("{stem:25}  <corrupt: {e}>");
+                corrupt.push(format!("{stem}: {e}"));
             }
         }
     }
+    if !stdout_tty {
+        for r in &rows {
+            println!("{}", r.0);
+        }
+        return Ok(());
+    }
+    println!();
+    println!(
+        "  {}  {}",
+        paint(
+            Style::Primary,
+            &format!("backups in {}", crate::config::backup_root().display())
+        ),
+        paint(Style::Label, &format!("({} total)", rows.len()))
+    );
+    println!();
+    for (id, age, op_sum, when, entries) in &rows {
+        println!(
+            "  {:<17}  {:>8}  {:<40}  {}  {}",
+            paint(Style::Label, when),
+            paint(Style::Label, &format!("{age} ago")),
+            paint(Style::Primary, op_sum),
+            paint(Style::Label, &format!("{entries} entries")),
+            paint(Style::Primary, id)
+        );
+    }
+    if !corrupt.is_empty() {
+        println!();
+        for c in &corrupt {
+            render::eprint_diag(
+                DiagLevel::Warning,
+                &format!("corrupt backup file: {c}"),
+                None,
+                &[],
+            );
+        }
+    }
+    println!();
+    println!(
+        "  {}  {}",
+        paint(Style::Label, "tip:"),
+        paint(Style::Primary, "janitor restore <id>  #  or `janitor undo`")
+    );
     Ok(())
 }

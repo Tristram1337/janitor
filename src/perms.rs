@@ -4,10 +4,67 @@ use std::fs;
 use std::os::unix::fs::{chown, MetadataExt, PermissionsExt};
 use std::path::Path;
 
+use nix::unistd::{Gid, Uid};
+
 use crate::acl::restore_acl;
 use crate::errors::{PmError, Result};
+use crate::render::{paint, Style};
 use crate::types::{AccessBits, SnapEntry};
-use crate::users::lookup_group;
+use crate::users::{gid_to_name, lookup_group, uid_to_name};
+
+/// Build a human-readable diff preview: current-vs-recorded lines. Skips
+/// entries whose live state already matches the snapshot.
+pub fn preview_restore(entries: &[SnapEntry]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in entries {
+        let md = match fs::symlink_metadata(&e.path) {
+            Ok(m) => m,
+            Err(_) => {
+                out.push(format!(
+                    "{}  {}",
+                    paint(Style::Danger, "missing"),
+                    e.path.display()
+                ));
+                continue;
+            }
+        };
+        let cur_mode = md.mode() & 0o7777;
+        let cur_uid = md.uid();
+        let cur_gid = md.gid();
+        let rec_mode = e.perm & 0o7777;
+        let mode_diff = cur_mode != rec_mode && !e.is_symlink;
+        let uid_diff = cur_uid != e.uid;
+        let gid_diff = cur_gid != e.gid;
+        if !mode_diff && !uid_diff && !gid_diff {
+            continue;
+        }
+        let mut line = format!("  {}", paint(Style::Primary, &e.path.display().to_string()));
+        if mode_diff {
+            line.push_str(&format!(
+                "\n      mode   {:04o} {} {:04o}",
+                cur_mode,
+                paint(Style::Separator, "→"),
+                rec_mode
+            ));
+        }
+        if uid_diff || gid_diff {
+            let cu = uid_to_name(Uid::from_raw(cur_uid));
+            let cg = gid_to_name(Gid::from_raw(cur_gid));
+            let ru = uid_to_name(Uid::from_raw(e.uid));
+            let rg = gid_to_name(Gid::from_raw(e.gid));
+            line.push_str(&format!(
+                "\n      owner  {}:{}  {}  {}:{}",
+                paint(Style::User, &cu),
+                paint(Style::Group, &cg),
+                paint(Style::Separator, "→"),
+                paint(Style::User, &ru),
+                paint(Style::Group, &rg)
+            ));
+        }
+        out.push(line);
+    }
+    out
+}
 
 /// Restore mode/uid/gid (and ACLs, if captured) from a snapshot.
 /// Processes entries in reverse (leaves first) so that restoring a

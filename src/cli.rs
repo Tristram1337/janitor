@@ -157,6 +157,9 @@ For partial (bit-level) revocation, use one of:\n  \
     Restore {
         /// Backup id (see `janitor list-backups`).
         backup_id: String,
+        /// Skip the interactive confirmation prompt.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
     },
 
     /// Undo the most recent backup (shortcut for `restore $(list-backups | head -1)`).
@@ -168,7 +171,11 @@ Looks up the newest backup and restores it. Equivalent to:\n\n  \
 Useful as a one-shot revert after any grant / chmod / chown / acl operation.\n\
 Combine with --dry-run to preview what would be reverted."
     )]
-    Undo,
+    Undo {
+        /// Skip the interactive confirmation prompt.
+        #[arg(short = 'y', long = "yes")]
+        yes: bool,
+    },
 
     /// Show the backup history touching PATH (newest first).
     #[command(
