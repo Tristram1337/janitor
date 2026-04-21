@@ -350,16 +350,27 @@ fn format_acl_entry(entry: &str) -> String {
     let kind = parts.next().unwrap_or(entry);
     let qual = parts.next().unwrap_or("");
     let perms = parts.next().unwrap_or("");
-    let mut out = String::new();
-    out.push_str(&paint(Style::Label, kind));
-    out.push_str(&paint(Style::Separator, ":"));
+    // Build qualifier visible text: `user:` / `user:bob` / `group:` / `mask:` / `other:`.
+    let qual_text = if qual.is_empty() {
+        format!("{kind}:")
+    } else {
+        format!("{kind}:{qual}")
+    };
+    let vis_cols = qual_text.chars().count();
+    const QUAL_COL: usize = 16;
+    let pad = if vis_cols < QUAL_COL { QUAL_COL - vis_cols } else { 2 };
+    // Paint qualifier.
     let qual_style = match kind {
         "user" => Style::User,
         "group" => Style::Group,
         _ => Style::Label,
     };
-    out.push_str(&paint(qual_style, qual));
-    out.push_str("  ");
+    let mut out = String::new();
+    out.push_str(&paint(Style::Label, &format!("{kind}:")));
+    if !qual.is_empty() {
+        out.push_str(&paint(qual_style, qual));
+    }
+    out.push_str(&" ".repeat(pad));
     for c in perms.chars() {
         match c {
             'r' | 'w' => out.push_str(&paint(Style::Ok, &c.to_string())),

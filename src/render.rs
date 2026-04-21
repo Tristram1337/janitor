@@ -122,22 +122,25 @@ pub fn paint(style: Style, text: &str) -> String {
         return text.to_string();
     }
     match style {
-        Style::Primary => text.bold().to_string(),
+        Style::Primary => text.to_string(),
         Style::Label => text.dimmed().to_string(),
-        Style::User => text.magenta().to_string(),
-        Style::Group => text.blue().to_string(),
-        Style::Dir => text.bold().blue().to_string(),
-        Style::Link => text.magenta().to_string(),
+        // Users, groups, dirs and ids intentionally ship plain — color
+        // is reserved for semantic signals (ok/warn/danger), not for
+        // every noun we paint. Keeps dense output from feeling loud.
+        Style::User => text.to_string(),
+        Style::Group => text.to_string(),
+        Style::Dir => text.to_string(),
+        Style::Link => text.to_string(),
         Style::Ok => text.green().to_string(),
-        Style::Traverse => text.cyan().to_string(),
+        Style::Traverse => text.dimmed().to_string(),
         Style::Deny => text.red().dimmed().to_string(),
-        Style::WarnMajor => text.yellow().bold().to_string(),
-        Style::Danger => text.red().bold().to_string(),
-        Style::Highlight => text.yellow().bold().to_string(),
-        Style::AclMarker => text.cyan().italic().to_string(),
+        Style::WarnMajor => text.yellow().to_string(),
+        Style::Danger => text.red().to_string(),
+        Style::Highlight => text.bold().to_string(),
+        Style::AclMarker => text.dimmed().to_string(),
         Style::Separator => text.dimmed().to_string(),
-        Style::Success => text.green().bold().to_string(),
-        Style::BackupId => text.cyan().underline().to_string(),
+        Style::Success => text.green().to_string(),
+        Style::BackupId => text.to_string(),
     }
 }
 
@@ -276,10 +279,6 @@ pub fn kv_pair(
 
 /// Return a visual width estimate for a string that may contain ANSI
 /// escapes (stripped) — character count only, not grapheme-aware.
-pub fn visible_width(s: &str) -> usize {
-    strip_ansi_width_str(s).chars().count()
-}
-
 fn strip_ansi_width_str(s: &str) -> String {
     // Minimal ANSI CSI stripper: drops `ESC[...m` sequences, keeps
     // everything else. Good enough for width estimation of our own output.
@@ -436,12 +435,14 @@ fn color_symbolic(sym: &str) -> String {
     if !colors_on() {
         return sym.to_string();
     }
+    // Keep it quiet: letters plain, dashes dim, and highlight the special
+    // bits (s/S/t/T) in yellow so setuid/sticky still pop.
     let mut out = String::new();
     for c in sym.chars() {
         match c {
             's' | 'S' | 't' | 'T' => out.push_str(&paint(Style::WarnMajor, &c.to_string())),
             '-' => out.push_str(&paint(Style::Separator, "-")),
-            _ => out.push_str(&paint(Style::Primary, &c.to_string())),
+            _ => out.push(c),
         }
     }
     out
@@ -583,6 +584,101 @@ pub fn summary_line(segments: &[(&str, &str)]) -> String {
 pub fn eprint_summary(segments: &[(&str, &str)]) {
     let mut stderr = std::io::stderr().lock();
     let _ = writeln!(stderr, "{}", summary_line(segments));
+}
+
+/// Visible width of a string that may contain ANSI CSI SGR escape
+/// sequences. Strips `\x1b[…m` and counts remaining chars.
+pub fn visible_width(s: &str) -> usize {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    let mut w = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            i += 2;
+            while i < bytes.len() {
+                let c = bytes[i];
+                i += 1;
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            // Count UTF-8 char boundary
+            let c = bytes[i];
+            let step = if c < 0x80 {
+                1
+            } else if c < 0xC0 {
+                1
+            } else if c < 0xE0 {
+                2
+            } else if c < 0xF0 {
+                3
+            } else {
+                4
+            };
+            i += step;
+            w += 1;
+        }
+    }
+    w
+}
+
+/// Pad `cell` (which may contain ANSI codes) with spaces on the right so
+/// its visible width reaches `width`. If already ≥ width, returns the
+/// original string unchanged.
+pub fn pad_right(cell: &str, width: usize) -> String {
+    let w = visible_width(cell);
+    if w >= width {
+        cell.to_string()
+    } else {
+        let mut s = cell.to_string();
+        s.push_str(&" ".repeat(width - w));
+        s
+    }
+}
+
+/// Render a fixed-column table where the caller has pre-painted cells.
+/// Column widths are computed from the visible width of the header + all
+/// cells. Unlike `simple_table`, this respects ANSI escape codes and
+/// never misaligns. Columns are separated by a 2-space gutter.
+pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
+    let cols = header.len();
+    let mut widths: Vec<usize> = header.iter().map(|h| visible_width(h)).collect();
+    for r in rows {
+        for (i, cell) in r.iter().enumerate().take(cols) {
+            let w = visible_width(cell);
+            if w > widths[i] {
+                widths[i] = w;
+            }
+        }
+    }
+    let mut out = String::new();
+    // Header
+    for (i, h) in header.iter().enumerate() {
+        let padded = pad_right(&paint(Style::Label, h), widths[i]);
+        out.push_str(&padded);
+        if i + 1 < cols {
+            out.push_str("  ");
+        }
+    }
+    out.push('\n');
+    // Rows
+    for r in rows {
+        for (i, cell) in r.iter().enumerate().take(cols) {
+            let w = if i + 1 < cols {
+                widths[i]
+            } else {
+                0 // last column: don't pad trailing
+            };
+            let padded = if w > 0 { pad_right(cell, w) } else { cell.clone() };
+            out.push_str(&padded);
+            if i + 1 < cols {
+                out.push_str("  ");
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 // ── Table wrapper (around `tabled`) ───────────────────────────────────

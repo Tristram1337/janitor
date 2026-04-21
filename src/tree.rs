@@ -170,10 +170,12 @@ fn walk_tree(
     };
 
     let full_prefix = format!("{prefix}{}", paint(Style::Separator, connector));
+    let raw_prefix_cols = depth * 3; // each connector / vert / space block = 3 cols (unicode BMP glyphs)
 
     let (self_reachable, child_md) = print_line(
         path,
         &full_prefix,
+        raw_prefix_cols,
         is_root,
         highlight_set,
         for_user,
@@ -249,6 +251,7 @@ fn walk_tree(
 fn print_line(
     path: &Path,
     prefix: &str,
+    prefix_cols: usize,
     is_root: bool,
     highlight_set: &HashSet<PathBuf>,
     for_user: Option<&str>,
@@ -353,14 +356,21 @@ fn print_line(
         paint(group_style, &gname)
     );
 
-    // Name (basename for non-root, full path for root).
+    // Name (basename + trailing / for dirs for visual cue; full path for root).
     let name_raw = if is_root {
         path.display().to_string()
     } else {
-        path.file_name()
+        let base = path
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| path.display().to_string())
+            .unwrap_or_else(|| path.display().to_string());
+        if is_dir {
+            format!("{base}/")
+        } else {
+            base
+        }
     };
+    let name_cols = name_raw.chars().count();
     let name_style = match lens {
         Some(s) => s,
         None => {
@@ -374,45 +384,65 @@ fn print_line(
         }
     };
     let mut name = paint(name_style, &name_raw);
+    let mut name_vis_extra = 0usize;
     if is_symlink {
         if let Ok(tgt) = fs::read_link(path) {
+            let tgt_s = tgt.display().to_string();
             name.push(' ');
             name.push_str(&paint(Style::Separator, glyphs().arrow_right));
             name.push(' ');
-            name.push_str(&paint(Style::Label, &tgt.display().to_string()));
+            name.push_str(&paint(Style::Label, &tgt_s));
+            name_vis_extra = 3 + tgt_s.chars().count();
         }
     }
 
-    // Highlight chain marker.
-    let marker = if !highlight_set.is_empty() {
+    // Highlight chain marker (visible width 2: glyph + space).
+    let (marker, marker_cols) = if !highlight_set.is_empty() {
         if highlight_set.contains(path) {
-            format!("{} ", paint(Style::Highlight, glyphs().bullet_filled))
+            (
+                format!("{} ", paint(Style::Highlight, glyphs().bullet_filled)),
+                2,
+            )
         } else {
-            "  ".to_string()
+            ("  ".to_string(), 2)
         }
     } else {
-        String::new()
+        (String::new(), 0)
     };
 
     // Badges (setuid/setgid/sticky/world-writable/acl/orphan).
     let mut badges: Vec<String> = Vec::new();
+    let mut badge_raw_cols = 0usize;
+    let mut push_badge = |label: &str, style: Style, badges: &mut Vec<String>, cols: &mut usize| {
+        badges.push(badge(label, style));
+        // Visible width: "[label]" = label.len() + 2
+        *cols += 2 + label.chars().count() + 2; // '  ' gutter + brackets + label
+        let _ = cols;
+    };
+    let _ = &mut push_badge;
     if mode & 0o4000 != 0 {
         badges.push(badge("setuid", Style::WarnMajor));
+        badge_raw_cols += 2 + "[setuid]".chars().count();
     }
     if mode & 0o2000 != 0 {
         badges.push(badge("setgid", Style::WarnMajor));
+        badge_raw_cols += 2 + "[setgid]".chars().count();
     }
     if mode & 0o1000 != 0 {
         badges.push(badge("sticky", Style::WarnMajor));
+        badge_raw_cols += 2 + "[sticky]".chars().count();
     }
     if mode & 0o002 != 0 && !is_symlink && !is_dir {
         badges.push(badge("world-writable", Style::Danger));
+        badge_raw_cols += 2 + "[world-writable]".chars().count();
     }
     if show_acl && acl_here {
         badges.push(badge("acl", Style::AclMarker));
+        badge_raw_cols += 2 + "[acl]".chars().count();
     }
     if u_orphan || g_orphan {
         badges.push(badge("orphan", Style::Danger));
+        badge_raw_cols += 2 + "[orphan]".chars().count();
     }
     let badges_str = if badges.is_empty() {
         String::new()
@@ -420,9 +450,18 @@ fn print_line(
         format!("  {}", badges.join(" "))
     };
 
-    // Final line.
+    // ── Layout: NAME left-column, padded, then mode + owner on the right ─
+    let left_cols = prefix_cols + marker_cols + name_cols + name_vis_extra;
+    const NAME_COL: usize = 28;
+    let pad = if left_cols < NAME_COL {
+        NAME_COL - left_cols
+    } else {
+        2
+    };
+    let gap = " ".repeat(pad);
+
     println!(
-        "{prefix}{marker}{mode_str}  {owner}  {name}{badges_str}"
+        "{prefix}{marker}{name}{gap}{mode_str}  {owner}{badges_str}"
     );
 
     (self_reachable, Some(md))

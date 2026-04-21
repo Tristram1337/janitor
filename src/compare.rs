@@ -3,7 +3,7 @@
 use crate::acl::has_extended_acl;
 use crate::errors::Result;
 use crate::helpers::resolve_path;
-use crate::render::{paint, summary_line, Style};
+use crate::render::{paint, Style};
 use nix::unistd::{Gid, Uid};
 use std::collections::BTreeMap;
 use std::fs;
@@ -37,14 +37,19 @@ fn snap(p: &Path) -> Option<Snap> {
     })
 }
 
-fn fmt_snap(s: &Snap) -> String {
+fn fmt_snap_kv(s: &Snap) -> String {
+    let kind_word = match s.kind {
+        'd' => "dir",
+        'l' => "symlink",
+        _ => "file",
+    };
     format!(
-        "{} mode={:04o} owner={} group={}{}",
-        s.kind,
+        "{} {:04o}  {}:{}{}",
+        kind_word,
         s.mode,
         crate::users::uid_to_name(Uid::from_raw(s.uid)),
         crate::users::gid_to_name(Gid::from_raw(s.gid)),
-        if s.acl { " +acl" } else { "" }
+        if s.acl { "  +acl" } else { "" }
     )
 }
 
@@ -83,7 +88,8 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
 
     println!();
     println!(
-        "  {}  {}  {}  {}",
+        "  {}  {}  {}  {}  {}",
+        paint(Style::Label, "compare"),
         paint(Style::Primary, &ra.display().to_string()),
         paint(Style::Separator, "↔"),
         paint(Style::Primary, &rb.display().to_string()),
@@ -106,25 +112,35 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
                     paint(Style::WarnMajor, "~"),
                     paint(Style::Primary, &disp)
                 );
-                println!("      A: {}", paint(Style::Label, &fmt_snap(x)));
-                println!("      B: {}", paint(Style::Label, &fmt_snap(y)));
+                println!("      {}  {}", paint(Style::Label, "A:"), paint(Style::Label, &fmt_snap_kv(x)));
+                println!("      {}  {}", paint(Style::Label, "B:"), paint(Style::Label, &fmt_snap_kv(y)));
             }
             (Some(x), None) => {
                 only_a += 1;
                 println!(
-                    "  {}  {}  {}",
+                    "  {}  {}",
                     paint(Style::Deny, "-"),
-                    paint(Style::Primary, &disp),
-                    paint(Style::Label, &format!("(only in A: {})", fmt_snap(x)))
+                    paint(Style::Primary, &disp)
                 );
+                println!(
+                    "      {}  {}",
+                    paint(Style::Label, "A:"),
+                    paint(Style::Label, &fmt_snap_kv(x))
+                );
+                println!("      {}  {}", paint(Style::Label, "B:"), paint(Style::Label, "(missing)"));
             }
             (None, Some(y)) => {
                 only_b += 1;
                 println!(
-                    "  {}  {}  {}",
+                    "  {}  {}",
                     paint(Style::Ok, "+"),
-                    paint(Style::Primary, &disp),
-                    paint(Style::Label, &format!("(only in B: {})", fmt_snap(y)))
+                    paint(Style::Primary, &disp)
+                );
+                println!("      {}  {}", paint(Style::Label, "A:"), paint(Style::Label, "(missing)"));
+                println!(
+                    "      {}  {}",
+                    paint(Style::Label, "B:"),
+                    paint(Style::Label, &fmt_snap_kv(y))
                 );
             }
             (None, None) => {}
@@ -133,17 +149,16 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
 
     println!();
     if changed == 0 && only_a == 0 && only_b == 0 {
-        println!("  {}", paint(Style::Ok, "identical"));
+        println!("  {}  {}", paint(Style::Ok, "✓"), paint(Style::Primary, "identical"));
+        println!();
         return Ok(());
     }
-    let changed_s = changed.to_string();
-    let only_a_s = only_a.to_string();
-    let only_b_s = only_b.to_string();
-    let segs: Vec<(&str, &str)> = vec![
-        (changed_s.as_str(), "changed"),
-        (only_a_s.as_str(), "only-in-A"),
-        (only_b_s.as_str(), "only-in-B"),
-    ];
-    eprintln!("{}", summary_line(&segs));
+    eprintln!(
+        "{}  {} changed · {} only in A · {} only in B",
+        paint(Style::Label, "summary:"),
+        changed,
+        only_a,
+        only_b
+    );
     Ok(())
 }

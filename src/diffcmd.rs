@@ -9,7 +9,7 @@ use serde::Serialize;
 
 use crate::backup::load_backup;
 use crate::errors::Result;
-use crate::render::{paint, summary_line, Style};
+use crate::render::{paint, Style};
 use crate::users::{gid_to_name, uid_to_name};
 
 #[derive(Debug, Serialize)]
@@ -84,7 +84,8 @@ pub fn cmd_diff(backup_id: &str, as_json: bool) -> Result<()> {
         let cur_mode = d.current_mode.as_deref().unwrap_or("----");
         if cur_mode != d.snapshot_mode {
             println!(
-                "      mode   {} {} {}",
+                "      {}   {}  {}  {}",
+                paint(Style::Label, "mode "),
                 paint(Style::Primary, &d.snapshot_mode),
                 paint(Style::Separator, "→"),
                 paint(Style::Primary, cur_mode)
@@ -102,7 +103,8 @@ pub fn cmd_diff(backup_id: &str, as_json: bool) -> Result<()> {
             .unwrap_or_else(|| "-".into());
         if d.current_uid != Some(d.snapshot_uid) || d.current_gid != Some(d.snapshot_gid) {
             println!(
-                "      owner  {}:{} {} {}:{}",
+                "      {}  {}:{}  {}  {}:{}",
+                paint(Style::Label, "owner"),
                 paint(Style::User, &snap_user),
                 paint(Style::Group, &snap_group),
                 paint(Style::Separator, "→"),
@@ -112,14 +114,21 @@ pub fn cmd_diff(backup_id: &str, as_json: bool) -> Result<()> {
         }
         if d.has_acl_change {
             println!(
-                "      acl    {}",
+                "      {}  {}",
+                paint(Style::Label, "acl  "),
                 paint(Style::AclMarker, "snapshot has ACL (will be restored)")
             );
         }
     }
-    let n = diffs.len().to_string();
-    let segs: Vec<(&str, &str)> = vec![(n.as_str(), if diffs.len() == 1 { "entry differs" } else { "entries differ" })];
-    eprintln!("{}", summary_line(&segs));
+    println!();
+    let n = diffs.len();
+    let word = if n == 1 { "entry differs" } else { "entries differ" };
+    eprintln!(
+        "{}  {}  {}",
+        paint(Style::Label, "summary:"),
+        paint(Style::Primary, &n.to_string()),
+        paint(Style::Label, word)
+    );
     Ok(())
 }
 

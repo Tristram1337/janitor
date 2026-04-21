@@ -33,29 +33,29 @@ pub const PRESETS: &[(&str, &str, &str, PresetKind)] = &[
 ];
 
 pub fn cmd_list_presets() {
+    use crate::render::{aligned_table, rule};
     println!();
     println!("  {}", paint(Style::Primary, "available presets"));
     println!();
     for (label, kind) in [("directories", PresetKind::Dir), ("files", PresetKind::File)] {
         println!("  {}", paint(Style::Label, label));
-        println!(
-            "    {:<15}  {:<6}  {}",
-            paint(Style::Label, "name"),
-            paint(Style::Label, "mode"),
-            paint(Style::Label, "description")
-        );
-        println!("    {}", paint(Style::Separator, &rule(64)));
-        for (name, mode, desc, k) in PRESETS {
-            if *k != kind {
-                continue;
-            }
-            println!(
-                "    {:<15}  {:<6}  {}",
-                paint(Style::Primary, name),
-                paint(Style::Primary, &format!("0{}", mode.trim_start_matches('0'))),
-                paint(Style::Label, desc),
-            );
+        let header = &["name", "mode", "description"];
+        let rows: Vec<Vec<String>> = PRESETS
+            .iter()
+            .filter(|(_, _, _, k)| *k == kind)
+            .map(|(name, mode, desc, _)| {
+                vec![
+                    paint(Style::Primary, name),
+                    paint(Style::Primary, &format!("0{}", mode.trim_start_matches('0'))),
+                    paint(Style::Label, desc),
+                ]
+            })
+            .collect();
+        let table = aligned_table(header, &rows);
+        for line in table.lines() {
+            println!("    {line}");
         }
+        println!("    {}", paint(Style::Separator, &rule(64)));
         println!();
     }
     println!(

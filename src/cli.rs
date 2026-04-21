@@ -534,7 +534,7 @@ With -R both trees are walked and any entry that differs is printed. Exit 0 when
         /// Right-hand path.
         b: String,
         /// Walk both trees recursively and diff each matching pair.
-        #[arg(short = 'R', long)]
+        #[arg(short = 'r', long, visible_short_alias = 'R')]
         recursive: bool,
     },
 

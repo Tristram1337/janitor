@@ -11,7 +11,7 @@ use crate::acl::has_extended_acl;
 use crate::errors::Result;
 use crate::helpers::resolve_path;
 use crate::matcher::ExcludeSet;
-use crate::render::{self, glyphs, paint, simple_table, summary_line, Style};
+use crate::render::{self, aligned_table, glyphs, paint, summary_line, Style};
 use crate::users::{gid_to_name, uid_to_name};
 
 #[derive(Debug, Serialize)]
@@ -242,7 +242,7 @@ pub fn cmd_audit(
             flags.join(" "),
         ]);
     }
-    println!("{}", simple_table(header, &rows));
+    println!("{}", aligned_table(header, &rows));
 
     // Stderr summary.
     let n = hits.len().to_string();
@@ -401,7 +401,7 @@ pub fn cmd_find_orphans(path: &str, as_json: bool) -> Result<()> {
             paint(Style::Primary, &h.path),
         ]);
     }
-    println!("{}", simple_table(header, &rows));
+    println!("{}", aligned_table(header, &rows));
 
     let n = hits.len().to_string();
     let mut summary = summary_line(&[(n.as_str(), "orphaned"), (&format!("{elapsed_ms}"), "ms")]);

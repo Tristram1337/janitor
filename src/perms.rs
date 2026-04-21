@@ -84,7 +84,7 @@ pub fn apply_restore(entries: &[SnapEntry], dry_run: bool) -> u32 {
 
         if entry.is_symlink {
             if dry_run {
-                println!("[dry-run] chown -h {uid}:{gid} {}", p.display());
+                // Preview already shows diffs; don't emit raw command lines.
             } else {
                 // lchown: do NOT follow symlinks (unlike std::os::unix::fs::chown).
                 use std::ffi::CString;
@@ -101,8 +101,7 @@ pub fn apply_restore(entries: &[SnapEntry], dry_run: bool) -> u32 {
         }
 
         if dry_run {
-            println!("[dry-run] chmod {perm:04o} {}", p.display());
-            println!("[dry-run] chown {uid}:{gid} {}", p.display());
+            // Preview already shows diffs; don't emit raw command lines.
         } else {
             let set_perms = || -> std::io::Result<()> {
                 fs::set_permissions(p, fs::Permissions::from_mode(perm))?;
@@ -177,18 +176,7 @@ pub fn apply_group_bits(
     let new_mode = (current & !0o070) | (new_triad << 3);
 
     if dry_run {
-        println!("[dry-run] chgrp {group} {}", path.display());
-        if new_mode != current {
-            let note = if replace && existing_group_triad > new_triad {
-                "  ⚠ reducing group bits"
-            } else {
-                ""
-            };
-            println!(
-                "[dry-run] chmod {new_mode:04o} {}  (was {current:04o}){note}",
-                path.display()
-            );
-        }
+        // Narration (✓ would chgrp / ✓ would chmod) in commands.rs covers this.
         return Ok(());
     }
 

@@ -152,7 +152,7 @@ pub fn cmd_grant(
                 println!(
                     "  {} {}  {}  {}",
                     paint(Style::Separator, "─"),
-                    paint(Style::Label, "skipped       "),
+                    paint(Style::Label, "skipped           "),
                     paint(Style::Primary, &p.display().to_string()),
                     paint(Style::Label, "(already world-traversable)")
                 );
@@ -188,7 +188,7 @@ pub fn cmd_grant(
             let before_mode = std::fs::symlink_metadata(p).map(|m| m.mode() & 0o7777).ok();
             apply_group_bits(p, &group_name, traverse_bits, dry_run, true)?;
             let after_mode = std::fs::symlink_metadata(p).map(|m| m.mode() & 0o7777).ok();
-            let verb = if dry_run { "would g+rx   " } else { "chmod g+rx   " };
+            let verb = if dry_run { "would g+rx        " } else { "chmod g+rx        " };
             if stdout_tty {
                 let was = match before_mode {
                     Some(m) => format!("  (was {:04o})", m),
@@ -227,9 +227,9 @@ pub fn cmd_grant(
             .ok();
         if stdout_tty {
             let verb = if dry_run {
-                format!("would chgrp  ")
+                format!("would chgrp       ")
             } else {
-                format!("chgrp        ")
+                format!("chgrp             ")
             };
             println!(
                 "  {} {}  {} → {}",
@@ -238,7 +238,7 @@ pub fn cmd_grant(
                 paint(Style::Primary, &target.display().to_string()),
                 paint(Style::Group, &group_name)
             );
-            let verb2 = if dry_run { "would chmod  " } else { "chmod        " };
+            let verb2 = if dry_run { "would chmod       " } else { "chmod             " };
             let was = t_before
                 .map(|m| format!("  (was {:04o})", m))
                 .unwrap_or_default();
@@ -337,26 +337,37 @@ fn narrate_action(tty: bool, dry_run: bool, already_ok: bool, verb: &str, subjec
         return;
     }
     let g = glyphs();
+    // Pad verb to a fixed visible width so target columns align with
+    // the rest of the grant output (skipped / chgrp / chmod lines).
+    const VERB_COL: usize = 18;
+    let verb_core = verb.trim();
+    let verb_full = if dry_run && !already_ok {
+        format!("would {verb_core}")
+    } else {
+        verb_core.to_string()
+    };
+    let pad = VERB_COL.saturating_sub(verb_full.chars().count());
+    let padded_verb = format!("{verb_full}{}", " ".repeat(pad));
+    let (bullet_style, bullet) = if already_ok {
+        (Style::Separator, "─")
+    } else if dry_run {
+        (Style::Separator, "·")
+    } else {
+        (Style::Ok, g.check)
+    };
     if already_ok {
         println!(
             "  {} {}  {}  {}",
-            paint(Style::Separator, "─"),
-            paint(Style::Label, verb),
+            paint(bullet_style, bullet),
+            paint(Style::Label, &padded_verb),
             subject,
             paint(Style::Label, "(already present)")
-        );
-    } else if dry_run {
-        println!(
-            "  {} {}  {}",
-            paint(Style::Label, "would"),
-            paint(Style::Label, verb),
-            subject
         );
     } else {
         println!(
             "  {} {}  {}",
-            paint(Style::Ok, g.check),
-            paint(Style::Label, verb),
+            paint(bullet_style, bullet),
+            paint(Style::Label, &padded_verb),
             subject
         );
     }
@@ -458,25 +469,35 @@ fn restore_with_preview(
             "\n  {} {}  {}",
             paint(Style::Separator, g.header_marker),
             paint(Style::Primary, &format!("janitor {verb}")),
-            paint(Style::Primary, &data.id)
+            paint(Style::BackupId, &data.id)
         );
         println!();
+        let (action, target) = format_op_split(&data.operation);
         println!("  {}", paint(Style::Label, "target operation"));
         println!(
-            "    id:         {}",
-            paint(Style::Primary, &data.id)
+            "    {}  {}",
+            paint(Style::Label, "id:        "),
+            paint(Style::BackupId, &data.id)
         );
         println!(
-            "    created:    {}  {}",
+            "    {}  {}  {}",
+            paint(Style::Label, "created:   "),
             paint(Style::Primary, &data.timestamp),
-            paint(Style::Label, &format!("({} ago)", age_str))
+            paint(Style::Label, &format!("({age_str} ago)"))
         );
         println!(
-            "    operation:  {}",
-            paint(Style::Primary, &format_op_summary(&data.operation))
+            "    {}  {}",
+            paint(Style::Label, "operation: "),
+            paint(Style::Primary, &action)
         );
         println!(
-            "    entries:    {} {}",
+            "    {}  {}",
+            paint(Style::Label, "target:    "),
+            paint(Style::Primary, &target)
+        );
+        println!(
+            "    {}  {}  {}",
+            paint(Style::Label, "entries:   "),
             paint(Style::Primary, &data.entries.len().to_string()),
             paint(Style::Label, "paths")
         );
@@ -577,6 +598,20 @@ fn format_op_summary(op: &crate::types::Operation) -> String {
         parts.push(t.clone());
     }
     parts.join(" ")
+}
+
+/// Split op into (action, target) for tabular rendering.
+fn format_op_split(op: &crate::types::Operation) -> (String, String) {
+    let mut head = op.op_type.clone();
+    if let Some(a) = &op.access {
+        head.push(' ');
+        head.push_str(a);
+    }
+    if let Some(u) = &op.user {
+        head.push_str(&format!(" (user {u})"));
+    }
+    let tgt = op.target.clone().unwrap_or_else(|| "-".into());
+    (head, tgt)
 }
 
 /// Returns something like "2h 14m ago" or "3d" etc.
@@ -721,18 +756,27 @@ pub fn cmd_history(path: &str, since: Option<&str>, as_json: bool) -> Result<()>
         )
     );
     println!();
-    for b in &rows {
-        let age = backup_age(&b.timestamp);
-        let op_sum = format_op_summary(&b.operation);
-        let user = b.operation.user.as_deref().unwrap_or("-");
-        println!(
-            "  {:>8}  {:<40}  {}  {}  {}",
-            paint(Style::Label, &format!("{age} ago")),
-            paint(Style::Primary, &op_sum),
-            paint(Style::Label, &format!("(by {user})")),
-            paint(Style::Label, &format!("{} entries", b.entries.len())),
-            paint(Style::Primary, &format!("…{}", b.id.rsplit('-').next().unwrap_or(&b.id)))
-        );
+    let header = &["when", "operation", "target", "by", "entries", "id"];
+    let table_rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|b| {
+            let age = backup_age(&b.timestamp);
+            let (action, target) = format_op_split(&b.operation);
+            let user = b.operation.user.as_deref().unwrap_or("-");
+            let id_tail = b.id.rsplit('-').next().unwrap_or(&b.id);
+            vec![
+                paint(Style::Label, &format!("{age} ago")),
+                paint(Style::Primary, &action),
+                paint(Style::Primary, &target),
+                paint(Style::Label, user),
+                paint(Style::Label, &b.entries.len().to_string()),
+                paint(Style::BackupId, &format!("…{id_tail}")),
+            ]
+        })
+        .collect();
+    let table = render::aligned_table(header, &table_rows);
+    for line in table.lines() {
+        println!("  {line}");
     }
     Ok(())
 }
@@ -801,7 +845,6 @@ pub fn cmd_locks(as_json: bool) -> Result<()> {
         paint(Style::Primary, "active locks"),
         paint(Style::Label, &format!("({})", locks.len()))
     );
-    println!();
     for l in &locks {
         println!(
             "    {}  {}",
@@ -873,7 +916,8 @@ pub fn cmd_list_backups(as_json: bool, path_substr: Option<&str>) -> Result<()> 
     }
     let stdout_tty = is_terminal::is_terminal(std::io::stdout());
     // Collect rows first.
-    let mut rows: Vec<(String, String, String, String, usize)> = Vec::new(); // (id, age, op_summary, when, entries)
+    // (id, age, op_summary, when, entries, action, target)
+    let mut rows: Vec<(String, String, String, String, usize, String, String)> = Vec::new();
     let mut corrupt: Vec<String> = Vec::new();
     for f in &files {
         let ext = f.extension().and_then(|e| e.to_str()).unwrap_or("");
@@ -898,7 +942,8 @@ pub fn cmd_list_backups(as_json: bool, path_substr: Option<&str>) -> Result<()> 
                 let age = backup_age(&data.timestamp);
                 let when = data.timestamp.clone();
                 let op_sum = format_op_summary(&data.operation);
-                rows.push((data.id, age, op_sum, when, data.entries.len()));
+                let (action, target) = format_op_split(&data.operation);
+                rows.push((data.id, age, op_sum, when, data.entries.len(), action, target));
             }
             Err(e) => {
                 let stem = f.file_stem().and_then(|s| s.to_str()).unwrap_or("?");
@@ -922,15 +967,23 @@ pub fn cmd_list_backups(as_json: bool, path_substr: Option<&str>) -> Result<()> 
         paint(Style::Label, &format!("({} total)", rows.len()))
     );
     println!();
-    for (id, age, op_sum, when, entries) in &rows {
-        println!(
-            "  {:<17}  {:>8}  {:<40}  {}  {}",
-            paint(Style::Label, when),
-            paint(Style::Label, &format!("{age} ago")),
-            paint(Style::Primary, op_sum),
-            paint(Style::Label, &format!("{entries} entries")),
-            paint(Style::Primary, id)
-        );
+    let header = &["when", "age", "operation", "target", "entries", "id"];
+    let trows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|(id, age, _op_sum, when, entries, action, target)| {
+            vec![
+                paint(Style::Label, when),
+                paint(Style::Label, &format!("{age} ago")),
+                paint(Style::Primary, action),
+                paint(Style::Primary, target),
+                paint(Style::Label, &entries.to_string()),
+                paint(Style::BackupId, id),
+            ]
+        })
+        .collect();
+    let table = render::aligned_table(header, &trows);
+    for line in table.lines() {
+        println!("  {line}");
     }
     if !corrupt.is_empty() {
         println!();
