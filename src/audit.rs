@@ -2,6 +2,7 @@
 
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+use std::time::Instant;
 
 use nix::unistd::{Gid, Uid};
 use serde::Serialize;
@@ -10,6 +11,7 @@ use crate::acl::has_extended_acl;
 use crate::errors::Result;
 use crate::helpers::resolve_path;
 use crate::matcher::ExcludeSet;
+use crate::render::{self, glyphs, paint, simple_table, summary_line, Style};
 use crate::users::{gid_to_name, uid_to_name};
 
 #[derive(Debug, Serialize)]
@@ -147,34 +149,125 @@ pub fn cmd_audit(
     as_json: bool,
 ) -> Result<()> {
     let root = resolve_path(path)?;
+    let t0 = Instant::now();
     let hits = scan(&root, filter, exclude);
+    let elapsed_ms = t0.elapsed().as_millis();
 
     if as_json {
         println!(
             "{}",
             serde_json::to_string_pretty(&hits).unwrap_or_else(|_| "[]".into())
         );
-    } else {
-        if hits.is_empty() {
-            println!("(no matches)");
-        } else {
-            println!(
-                "{:>6}  {:>8}  {:>8}  {:>4}  {}",
-                "mode", "user", "group", "acl", "path"
-            );
-            for h in &hits {
-                println!(
-                    "{:>6}  {:>8}  {:>8}  {:>4}  {}",
-                    h.mode,
-                    h.user,
-                    h.group,
-                    if h.has_acl { "yes" } else { "-" },
-                    h.path
-                );
-            }
-            eprintln!("({} match(es))", hits.len());
+        return Ok(());
+    }
+
+    // ── Counters for summary (stderr) ────────────────────────────────
+    let mut c_setuid = 0u32;
+    let mut c_setgid = 0u32;
+    let mut c_sticky = 0u32;
+    let mut c_ww = 0u32;
+    let mut c_wr = 0u32;
+    let mut c_acl = 0u32;
+    for h in &hits {
+        let m = u32::from_str_radix(&h.mode, 8).unwrap_or(0);
+        if m & 0o4000 != 0 {
+            c_setuid += 1;
+        }
+        if m & 0o2000 != 0 {
+            c_setgid += 1;
+        }
+        if m & 0o1000 != 0 {
+            c_sticky += 1;
+        }
+        if m & 0o002 != 0 {
+            c_ww += 1;
+        }
+        if m & 0o004 != 0 && filter.world_readable {
+            c_wr += 1;
+        }
+        if h.has_acl {
+            c_acl += 1;
         }
     }
+
+    if hits.is_empty() {
+        eprintln!(
+            "{}",
+            paint(
+                Style::Label,
+                &format!("(no matches — scanned in {} ms)", elapsed_ms)
+            )
+        );
+        return Ok(());
+    }
+
+    // ── Render table via render::simple_table ────────────────────────
+    let header = &["mode", "user", "group", "acl", "size", "path", "flags"];
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(hits.len());
+    for h in &hits {
+        let m = u32::from_str_radix(&h.mode, 8).unwrap_or(0);
+        let mode_paint = if m & 0o7000 != 0 || m & 0o002 != 0 {
+            paint(Style::WarnMajor, &h.mode)
+        } else {
+            paint(Style::Primary, &h.mode)
+        };
+        let acl_cell = if h.has_acl {
+            paint(Style::AclMarker, glyphs().bullet_filled)
+        } else {
+            paint(Style::Separator, "-")
+        };
+        let mut flags: Vec<String> = Vec::new();
+        if m & 0o4000 != 0 {
+            flags.push(paint(Style::WarnMajor, "[setuid]"));
+        }
+        if m & 0o2000 != 0 {
+            flags.push(paint(Style::WarnMajor, "[setgid]"));
+        }
+        if m & 0o1000 != 0 {
+            flags.push(paint(Style::WarnMajor, "[sticky]"));
+        }
+        if m & 0o002 != 0 {
+            flags.push(paint(Style::Danger, "[world-writable]"));
+        }
+        if h.has_acl {
+            flags.push(paint(Style::AclMarker, "[acl]"));
+        }
+        rows.push(vec![
+            mode_paint,
+            paint(Style::User, &h.user),
+            paint(Style::Group, &h.group),
+            acl_cell,
+            paint(Style::Label, &render::format_size(h.size)),
+            paint(Style::Primary, &h.path),
+            flags.join(" "),
+        ]);
+    }
+    println!("{}", simple_table(header, &rows));
+
+    // Stderr summary.
+    let n = hits.len().to_string();
+    let su = c_setuid.to_string();
+    let sg = c_setgid.to_string();
+    let st = c_sticky.to_string();
+    let ww = c_ww.to_string();
+    let wr = c_wr.to_string();
+    let ac = c_acl.to_string();
+    let segs: Vec<(&str, &str)> = vec![
+        (n.as_str(), "matches"),
+        (if c_setuid > 0 { su.as_str() } else { "" }, "setuid"),
+        (if c_setgid > 0 { sg.as_str() } else { "" }, "setgid"),
+        (if c_sticky > 0 { st.as_str() } else { "" }, "sticky"),
+        (if c_ww > 0 { ww.as_str() } else { "" }, "world-writable"),
+        (if c_wr > 0 { wr.as_str() } else { "" }, "world-readable"),
+        (if c_acl > 0 { ac.as_str() } else { "" }, "acl"),
+    ];
+    let ms = format!("{elapsed_ms}");
+    let mut all = summary_line(&segs);
+    all.push_str("  ");
+    all.push_str(&paint(Style::Separator, glyphs().midot));
+    all.push_str("  ");
+    all.push_str(&paint(Style::Label, &format!("{ms} ms")));
+    eprintln!("{all}");
     Ok(())
 }
 
@@ -227,26 +320,9 @@ pub fn cmd_audit_fix(
 
 /// `find-orphans`: files with non-existent owner/group.
 pub fn cmd_find_orphans(path: &str, as_json: bool) -> Result<()> {
-    let filter = AuditFilter {
-        world_writable: false,
-        world_readable: false,
-        world_executable: false,
-        setuid: false,
-        setgid: false,
-        sticky: false,
-        owner_uid: None,
-        owner_user: None,
-        group_gid: None,
-        group_name: None,
-        mode_equals: None,
-        has_acl: false,
-        no_owner: true,
-        no_group: false,
-    };
-    // To report orphaned owner OR orphaned group we'd need two passes;
-    // instead use a combined walker:
     let root = resolve_path(path)?;
-    let mut hits: Vec<AuditHit> = Vec::new();
+    let t0 = Instant::now();
+    let mut hits: Vec<(AuditHit, &'static str)> = Vec::new();
     for entry in walkdir::WalkDir::new(&root)
         .follow_links(false)
         .into_iter()
@@ -267,36 +343,74 @@ pub fn cmd_find_orphans(path: &str, as_json: bool) -> Result<()> {
             .ok()
             .flatten()
             .is_some();
-        if has_u && has_g {
-            continue;
-        }
-        hits.push(AuditHit {
-            path: p.display().to_string(),
-            mode: format!("{:04o}", md.mode() & 0o7777),
-            uid,
-            user: uid_to_name(Uid::from_raw(uid)),
-            gid,
-            group: gid_to_name(Gid::from_raw(gid)),
-            has_acl: has_extended_acl(p),
-            size: md.len(),
-        });
+        let kind = match (has_u, has_g) {
+            (true, true) => continue,
+            (false, false) => "uid+gid",
+            (false, true) => "uid",
+            (true, false) => "gid",
+        };
+        hits.push((
+            AuditHit {
+                path: p.display().to_string(),
+                mode: format!("{:04o}", md.mode() & 0o7777),
+                uid,
+                user: uid_to_name(Uid::from_raw(uid)),
+                gid,
+                group: gid_to_name(Gid::from_raw(gid)),
+                has_acl: has_extended_acl(p),
+                size: md.len(),
+            },
+            kind,
+        ));
     }
-    let _ = &filter; // silence unused
+    let elapsed_ms = t0.elapsed().as_millis();
 
     if as_json {
+        let simple: Vec<&AuditHit> = hits.iter().map(|(h, _)| h).collect();
         println!(
             "{}",
-            serde_json::to_string_pretty(&hits).unwrap_or_else(|_| "[]".into())
+            serde_json::to_string_pretty(&simple).unwrap_or_else(|_| "[]".into())
         );
-    } else if hits.is_empty() {
-        println!("(no orphaned files under {})", root.display());
-    } else {
-        println!("{:>6}  {:>8}  {:>8}  {}", "mode", "user", "group", "path");
-        for h in &hits {
-            println!("{:>6}  {:>8}  {:>8}  {}", h.mode, h.user, h.group, h.path);
-        }
-        eprintln!("({} orphaned)", hits.len());
+        return Ok(());
     }
+
+    if hits.is_empty() {
+        eprintln!(
+            "{}",
+            paint(
+                Style::Label,
+                &format!(
+                    "(no orphaned files under {} — scanned in {} ms)",
+                    root.display(),
+                    elapsed_ms
+                )
+            )
+        );
+        return Ok(());
+    }
+
+    let header = &["mode", "owner", "group", "orphan", "size", "path"];
+    let mut rows: Vec<Vec<String>> = Vec::with_capacity(hits.len());
+    for (h, kind) in &hits {
+        rows.push(vec![
+            paint(Style::Primary, &h.mode),
+            paint(Style::Danger, &h.user),
+            paint(Style::Danger, &h.group),
+            paint(Style::Danger, &format!("[{kind}]")),
+            paint(Style::Label, &render::format_size(h.size)),
+            paint(Style::Primary, &h.path),
+        ]);
+    }
+    println!("{}", simple_table(header, &rows));
+
+    let n = hits.len().to_string();
+    let mut summary = summary_line(&[(n.as_str(), "orphaned"), (&format!("{elapsed_ms}"), "ms")]);
+    summary.push_str("\n  ");
+    summary.push_str(&paint(
+        Style::Label,
+        "tip: fix with `janitor chown <user>:<group> PATH [...]`",
+    ));
+    eprintln!("{summary}");
     Ok(())
 }
 
