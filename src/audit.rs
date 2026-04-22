@@ -274,8 +274,19 @@ pub fn cmd_audit(
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(hits.len());
     for h in &hits {
         let m = u32::from_str_radix(&h.mode, 8).unwrap_or(0);
+        // Paint `mode` cell so each row makes the filter-match reason
+        // visible at a glance:
+        //   * world-writable or any special bit → red (WarnMajor)
+        //   * matched `--world-readable` filter with o+r set → yellow
+        //     (Highlight) — caller asked for it, show it.
+        //   * matched `--world-executable` filter with o+x set → yellow
+        //   * everything else → plain Primary.
         let mode_paint = if m & 0o7000 != 0 || m & 0o002 != 0 {
             paint(Style::WarnMajor, &h.mode)
+        } else if (filter.world_readable && m & 0o004 != 0)
+            || (filter.world_executable && m & 0o001 != 0)
+        {
+            paint(Style::Highlight, &h.mode)
         } else {
             paint(Style::Primary, &h.mode)
         };

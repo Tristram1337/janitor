@@ -164,7 +164,7 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
             Err(e) => {
                 println!(
                     "  {}  {:<path_w$}  {}",
-                    paint(Style::Danger, glyphs().cross),
+                    paint(Style::Danger, glyphs().fail),
                     path_cells[i],
                     paint(Style::Danger, &format!("<{e}>")),
                     path_w = path_w
@@ -190,15 +190,17 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
 
         let is_target = *p == target;
         // ── Marker column (2 cols): status indicator for each step ──
-        //  ✗ = blocker (or unreachable target), → = target reached,
+        //  ● = blocker (or unreachable target), → = target reached,
         //  blank = traverse hop that passed (tree connector conveys
-        //  the descent visually).
+        //  the descent visually). We deliberately use `fail` (●/X)
+        //  here rather than `cross` (✗/[X]) so the 1-col budget of
+        //  the marker column is preserved even in ASCII mode.
         let marker = if Some(i) == blocker_idx {
-            paint(Style::Danger, glyphs().cross)
+            paint(Style::Danger, glyphs().fail)
         } else if is_target && blocker_idx.is_none() {
             paint(Style::Ok, glyphs().arrow_right)
         } else if is_target {
-            paint(Style::Deny, glyphs().cross)
+            paint(Style::Deny, glyphs().fail)
         } else {
             " ".to_string()
         };

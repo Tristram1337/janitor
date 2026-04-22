@@ -151,6 +151,11 @@ pub struct Glyphs {
     pub warn: &'static str,          // `!!` (syslog/pacman-style)
     pub check: &'static str,         // `✓` or `[ok]`
     pub cross: &'static str,         // `✗` or `[X]`
+    /// Single-column failure marker (systemd-style red bullet) — used
+    /// in fixed-width marker columns where `cross`'s `[X]` ASCII form
+    /// would misalign. Distinct from `bullet_filled` because its ASCII
+    /// fallback is intentionally `X` (1 col), not `[x]` (3 cols).
+    pub fail: &'static str, // `●` or `X`
     pub arrow_right: &'static str,   // `→` or `->`
     pub midot: &'static str,         // `·` or `-`
     pub rule_char: &'static str,     // `─` or `-`
@@ -167,6 +172,7 @@ const GLYPHS_UNICODE: Glyphs = Glyphs {
     warn: "!!",
     check: "✓",
     cross: "✗",
+    fail: "●",
     arrow_right: "→",
     midot: "·",
     rule_char: "─",
@@ -182,6 +188,7 @@ const GLYPHS_ASCII: Glyphs = Glyphs {
     info: "::",
     warn: "!!",
     check: "[ok]",
+    fail: "X",
     cross: "[X]",
     arrow_right: "->",
     midot: "-",
