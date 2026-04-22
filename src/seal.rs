@@ -7,7 +7,7 @@
 //! transaction with one snapshot, and auto-propagates the traversal bit
 //! through the parent chain.
 
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::acl::{acl_modify, supports_acl};

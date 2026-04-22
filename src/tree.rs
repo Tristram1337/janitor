@@ -412,37 +412,23 @@ fn print_line(
 
     // Badges (setuid/setgid/sticky/world-writable/acl/orphan).
     let mut badges: Vec<String> = Vec::new();
-    let mut badge_raw_cols = 0usize;
-    let mut push_badge = |label: &str, style: Style, badges: &mut Vec<String>, cols: &mut usize| {
-        badges.push(badge(label, style));
-        // Visible width: "[label]" = label.len() + 2
-        *cols += 2 + label.chars().count() + 2; // '  ' gutter + brackets + label
-        let _ = cols;
-    };
-    let _ = &mut push_badge;
     if mode & 0o4000 != 0 {
         badges.push(badge("setuid", Style::WarnMajor));
-        badge_raw_cols += 2 + "[setuid]".chars().count();
     }
     if mode & 0o2000 != 0 {
         badges.push(badge("setgid", Style::WarnMajor));
-        badge_raw_cols += 2 + "[setgid]".chars().count();
     }
     if mode & 0o1000 != 0 {
         badges.push(badge("sticky", Style::WarnMajor));
-        badge_raw_cols += 2 + "[sticky]".chars().count();
     }
     if mode & 0o002 != 0 && !is_symlink && !is_dir {
         badges.push(badge("world-writable", Style::Danger));
-        badge_raw_cols += 2 + "[world-writable]".chars().count();
     }
     if show_acl && acl_here {
         badges.push(badge("acl", Style::AclMarker));
-        badge_raw_cols += 2 + "[acl]".chars().count();
     }
     if u_orphan || g_orphan {
         badges.push(badge("orphan", Style::Danger));
-        badge_raw_cols += 2 + "[orphan]".chars().count();
     }
     let badges_str = if badges.is_empty() {
         String::new()

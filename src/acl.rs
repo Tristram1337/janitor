@@ -50,8 +50,14 @@ pub fn supports_acl(path: &Path) -> bool {
     if ret >= 0 {
         return true;
     }
-    match std::io::Error::last_os_error().raw_os_error() {
-        Some(libc::ENOTSUP) | Some(libc::EOPNOTSUPP) => false,
+    // On Linux, ENOTSUP and EOPNOTSUPP are the same errno value — the
+    // second arm of an OR-pattern would be unreachable. On some other
+    // Unixes they differ, so we still want to match both conceptually;
+    // collapse to a single arm using equality to dodge the compiler
+    // warning while remaining portable.
+    let err = std::io::Error::last_os_error().raw_os_error();
+    match err {
+        Some(e) if e == libc::ENOTSUP || e == libc::EOPNOTSUPP => false,
         // ENODATA / ENOATTR: attribute absent, FS still supports ACLs.
         // Anything else (ENOENT, EACCES, …): can't tell — assume yes
         // and let the real setfacl surface the error.

@@ -2,7 +2,7 @@
 
 use crate::chperm::cmd_chmod;
 use crate::errors::{PmError, Result};
-use crate::render::{paint, rule, Style};
+use crate::render::{paint, Style};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum PresetKind {
