@@ -297,23 +297,51 @@ struct UserRow {
 }
 
 fn read_passwd_users() -> Vec<UserRow> {
-    let mut out = Vec::new();
-    let mut seen = BTreeMap::new();
-    if let Ok(content) = fs::read_to_string("/etc/passwd") {
-        for line in content.lines() {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() < 3 {
+    // Use the NSS enumeration API rather than reading /etc/passwd
+    // directly, so users served by LDAP / SSSD / systemd-userdbd /
+    // any other NSS backend actually show up in who-can. Falls back
+    // to /etc/passwd on platforms where getpwent is unavailable.
+    let mut seen: BTreeMap<String, u32> = BTreeMap::new();
+    unsafe {
+        libc::setpwent();
+        loop {
+            let pw = libc::getpwent();
+            if pw.is_null() {
+                break;
+            }
+            let name_ptr = (*pw).pw_name;
+            if name_ptr.is_null() {
                 continue;
             }
-            if let Ok(uid) = parts[2].parse::<u32>() {
-                seen.entry(parts[0].to_string()).or_insert(uid);
+            let name = match std::ffi::CStr::from_ptr(name_ptr).to_str() {
+                Ok(s) => s.to_string(),
+                Err(_) => continue,
+            };
+            let uid = (*pw).pw_uid as u32;
+            seen.entry(name).or_insert(uid);
+        }
+        libc::endpwent();
+    }
+    // Safety net: if NSS enumeration yielded nothing (misconfigured
+    // environment, container with no NSS shim), fall back to the flat
+    // /etc/passwd scan so we never regress against the previous
+    // implementation.
+    if seen.is_empty() {
+        if let Ok(content) = fs::read_to_string("/etc/passwd") {
+            for line in content.lines() {
+                let parts: Vec<&str> = line.split(':').collect();
+                if parts.len() < 3 {
+                    continue;
+                }
+                if let Ok(uid) = parts[2].parse::<u32>() {
+                    seen.entry(parts[0].to_string()).or_insert(uid);
+                }
             }
         }
     }
-    for (name, uid) in seen {
-        out.push(UserRow { name, uid });
-    }
-    out
+    seen.into_iter()
+        .map(|(name, uid)| UserRow { name, uid })
+        .collect()
 }
 
 // Legacy helpers retained for path_chain consumers that still need them.
