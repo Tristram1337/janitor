@@ -88,14 +88,55 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
         }
     }
 
-    // Column widths.
-    let max_path_w = chain
+    // ── Build tree-shaped path cells for each step ────────────────────
+    // Each cell is `<indent><connector><basename>` where:
+    //   - step 0 ("/") has no connector;
+    //   - every subsequent step is the single child of the previous
+    //     step (linear chain), so we render `└─ ` with 3 cols of indent
+    //     per ancestor above it.
+    // This visualizes the descent: ancestors cascade down and to the
+    // right, making it obvious this is a traversal chain.
+    let g = glyphs();
+    let path_cells: Vec<String> = chain
         .iter()
-        .map(|p| p.display().to_string().chars().count())
+        .enumerate()
+        .map(|(i, p)| {
+            let base = if i == 0 {
+                // Root: show the slash itself.
+                "/".to_string()
+            } else {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| p.display().to_string());
+                // Trailing slash for directories to echo `tree` style.
+                let is_dir_like = fs::symlink_metadata(p)
+                    .map(|md| md.is_dir() && !md.file_type().is_symlink())
+                    .unwrap_or(false);
+                if is_dir_like {
+                    format!("{name}/")
+                } else {
+                    name
+                }
+            };
+            if i == 0 {
+                base
+            } else {
+                let indent = "   ".repeat(i - 1);
+                format!("{indent}{}{base}", g.tree_last)
+            }
+        })
+        .collect();
+
+    // Column widths: based on visible path-cell width (+ optional
+    // " +acl" badge), not full path.
+    let path_w = path_cells
+        .iter()
+        .zip(chain.iter())
+        .map(|(c, p)| c.chars().count() + if has_extended_acl(p) { 5 } else { 0 })
         .max()
         .unwrap_or(10)
         .max(20);
-    let path_w = max_path_w.min(55);
 
     // Pre-compute owner strings so we can right-pad the owner column to
     // a uniform width; without this the `traverse ok / no traverse`
@@ -122,10 +163,9 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
             Ok(m) => m,
             Err(e) => {
                 println!(
-                    "  {}  {} {:<path_w$}  {}",
+                    "  {}  {:<path_w$}  {}",
                     paint(Style::Danger, glyphs().cross),
-                    paint(Style::Separator, " "),
-                    p.display().to_string(),
+                    path_cells[i],
                     paint(Style::Danger, &format!("<{e}>")),
                     path_w = path_w
                 );
@@ -150,18 +190,17 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
 
         let is_target = *p == target;
         // ── Marker column (2 cols): status indicator for each step ──
-        // ✗ = blocker, → = target reached, · = traverse hop that passed.
+        //  ✗ = blocker (or unreachable target), → = target reached,
+        //  blank = traverse hop that passed (tree connector conveys
+        //  the descent visually).
         let marker = if Some(i) == blocker_idx {
             paint(Style::Danger, glyphs().cross)
         } else if is_target && blocker_idx.is_none() {
             paint(Style::Ok, glyphs().arrow_right)
         } else if is_target {
-            // Target but unreachable (blocker earlier in chain).
             paint(Style::Deny, glyphs().cross)
         } else {
-            // Successful traverse hop — show a midot to visualize the
-            // descent chain (these are the "traverse dots").
-            paint(Style::Ok, glyphs().midot)
+            " ".to_string()
         };
 
         let rhs = if is_target {
@@ -217,17 +256,42 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
             }
         };
 
-        let path_disp = p.display().to_string();
-        let path_visual = format!("{}{}", path_disp, acl_hint);
-        // Left-align path column with manual padding over visible width.
-        let pad = path_w.saturating_sub(path_disp.chars().count());
+        let path_cell = &path_cells[i];
+        // Color the tree connectors in the separator style so the
+        // basenames still read clearly and the connectors recede.
+        let path_painted = if i == 0 {
+            paint(Style::Primary, path_cell)
+        } else {
+            // Cell layout: "<indent><connector><basename>". Split to
+            // paint connector and basename separately.
+            let indent_cols = (i - 1) * 3;
+            let (indent_part, rest) = path_cell.split_at(indent_cols);
+            // `rest` starts with "└─ " (6 bytes: 3 utf-8 chars).
+            let mut ci = rest.char_indices();
+            ci.next();
+            ci.next();
+            ci.next();
+            let conn_end = ci.next().map(|(idx, _)| idx).unwrap_or(rest.len());
+            let (conn, base) = rest.split_at(conn_end);
+            format!(
+                "{indent_part}{}{}",
+                paint(Style::Separator, conn),
+                paint(Style::Primary, base),
+            )
+        };
+        let path_visual = path_painted;
+        // Visible width of the full cell (connector + basename + optional ` +acl`).
+        let acl_hint_vw = if acl_hint.is_empty() { 0 } else { 5 }; // " +acl"
+        let cell_vw = path_cell.chars().count() + acl_hint_vw;
+        let pad = path_w.saturating_sub(cell_vw);
         let owner_padded = format!("{owner}{}", " ".repeat(owner_pad));
         let sym_owner = format!("{sym}  {owner_padded}");
         println!(
-            "  {}  {}{}  {}  {}  {}",
+            "  {}  {}{}{}  {}  {}  {}",
             marker,
             path_visual,
-            " ".repeat(pad.max(1)),
+            acl_hint,
+            " ".repeat(pad),
             oct,
             sym_owner,
             rhs
