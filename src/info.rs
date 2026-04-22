@@ -11,7 +11,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::acl::get_acl;
 use crate::errors::Result;
 use crate::render::{
-    self, badge, header_line, kv, kv_pair, paint, rule, section_title, DiagLevel, Style,
+    self, badge, header_line, kv_grid, paint, rule, section_title, DiagLevel, KvRow, Style,
 };
 
 fn file_type_char(md: &fs::Metadata) -> char {
@@ -223,37 +223,35 @@ pub fn cmd_info(path: &str, for_user: Option<&str>) -> Result<()> {
     );
 
     let key_w = 6;
-    let col_w = 40;
-    println!(
-        "  {}",
-        kv_pair(("owner", &owner_val), ("mode", &mode_str), key_w, col_w)
-    );
-
+    let mtime_val = paint(Style::Primary, &format_mtime(&md));
+    let mut rows: Vec<KvRow> = Vec::with_capacity(3);
+    rows.push((
+        ("owner", owner_val.as_str()),
+        Some(("mode", mode_str.as_str())),
+    ));
+    let size_val;
     if ft == '-' || ft == 'd' {
-        let size_val = format!(
+        size_val = format!(
             "{}  {}",
             paint(Style::Primary, &render::format_size(md.len())),
             paint(Style::Label, &format!("({} bytes)", md.len()))
         );
-        println!(
-            "  {}",
-            kv_pair(("group", &group_val), ("size", &size_val), key_w, col_w)
-        );
-        println!(
-            "  {}{}",
-            " ".repeat(col_w),
-            kv("mtime", &paint(Style::Primary, &format_mtime(&md)), key_w)
-        );
+        rows.push((
+            ("group", group_val.as_str()),
+            Some(("size", size_val.as_str())),
+        ));
+        rows.push((("mtime", mtime_val.as_str()), None));
     } else {
-        println!(
-            "  {}",
-            kv_pair(
-                ("group", &group_val),
-                ("mtime", &paint(Style::Primary, &format_mtime(&md))),
-                key_w,
-                col_w
-            )
-        );
+        rows.push((
+            ("group", group_val.as_str()),
+            Some(("mtime", mtime_val.as_str())),
+        ));
+    }
+    // kv_grid appends '\n' per row; prefix each line with the two-space
+    // indent that the rest of the card uses.
+    let grid = kv_grid(&rows, key_w, 2);
+    for line in grid.lines() {
+        println!("  {}", line);
     }
 
     // ── ACL section ───────────────────────────────────────────────────

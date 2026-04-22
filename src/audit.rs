@@ -269,7 +269,7 @@ pub fn cmd_audit(
         return Ok(());
     }
 
-    // ── Render table via render::simple_table ────────────────────────
+    // ── Render table via render::aligned_table ───────────────────────
     let header = &["mode", "user", "group", "acl", "size", "path", "flags"];
     let mut rows: Vec<Vec<String>> = Vec::with_capacity(hits.len());
     for h in &hits {

@@ -5,6 +5,25 @@ All notable changes to `janitor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `info`: two-column grid now aligns the right column dynamically from
+  the widest left cell, so `mode` / `size` / `mtime` stack at the same
+  screen column even when user/group names expand (orphan UIDs like
+  `#99999`, long names, etc.). Previously a fixed `col_w = 40` drifted.
+
+### Changed
+- Shell completions no longer list short-form flags (`-n`, `-j`, `-q`,
+  `-h`, `-V`) or subcommand aliases (`g`, `rv`, `t`, `b`, `r`, `u`, `h`,
+  `cp`, `ls`, `prune`, `i`, `a`, `w`, `p`, `e`, and the `-R` short alias
+  on `compare --recursive`). The short forms remain fully functional on
+  the CLI and are still documented in `--help` and in `janitor(1)`;
+  they just don't clutter `janitor <TAB><TAB>` anymore. Implemented as a
+  completion-only view of the command tree, so the parser is untouched.
+- Dropped the unused `tabled` dependency (dead `simple_table` helper
+  removed; all tables now go through the ANSI-aware `aligned_table`).
+
 ## [0.1.1] - 2026-04-22
 
 Pre-1.0 polishing pass: UX triage, packaging, and correctness fixes. **Breaking
