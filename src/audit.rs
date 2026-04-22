@@ -189,10 +189,15 @@ pub fn cmd_audit(
     exclude: &ExcludeSet,
     as_json: bool,
     include_pseudo: bool,
+    paths_only: bool,
+    print0: bool,
 ) -> Result<()> {
     let root = resolve_path(path)?;
     let t0 = Instant::now();
-    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo, true);
+    // Pipe-pure path output has no ACL column and no ACL filter ==> no
+    // need to issue the per-file lgetxattr syscall.
+    let probe_acl = !(paths_only || print0) || filter.has_acl;
+    let (hits, pseudo_skipped) = scan(&root, filter, exclude, include_pseudo, probe_acl);
     let elapsed_ms = t0.elapsed().as_millis();
     if pseudo_skipped > 0 {
         eprintln!(
@@ -206,6 +211,21 @@ pub fn cmd_audit(
             "{}",
             serde_json::to_string_pretty(&hits).unwrap_or_else(|_| "[]".into())
         );
+        return Ok(());
+    }
+
+    // Pipe-pure path output. No header, no colors, no summary on
+    // stdout — stderr still carries the scan-time note above. Compose
+    // with `janitor chmod --stdin0`, `xargs`, etc.
+    if paths_only || print0 {
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut out = stdout.lock();
+        let sep: u8 = if print0 { 0 } else { b'\n' };
+        for h in &hits {
+            let _ = out.write_all(h.path.as_bytes());
+            let _ = out.write_all(&[sep]);
+        }
         return Ok(());
     }
 
