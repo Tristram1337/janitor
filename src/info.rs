@@ -206,16 +206,17 @@ pub fn cmd_info(path: &str, for_user: Option<&str>) -> Result<()> {
     );
     let owner_val = format!(
         "{}  {}",
-        paint(
-            if u_orphan { Style::Danger } else { Style::User },
-            &uname
-        ),
+        paint(if u_orphan { Style::Danger } else { Style::User }, &uname),
         paint(Style::Label, &format!("(uid {})", md.uid()))
     );
     let group_val = format!(
         "{}  {}",
         paint(
-            if g_orphan { Style::Danger } else { Style::Group },
+            if g_orphan {
+                Style::Danger
+            } else {
+                Style::Group
+            },
             &gname
         ),
         paint(Style::Label, &format!("(gid {})", md.gid()))
@@ -330,9 +331,7 @@ pub fn cmd_info(path: &str, for_user: Option<&str>) -> Result<()> {
             paint(Style::WarnMajor, g.warn),
             paint(
                 Style::WarnMajor,
-                &format!(
-                    "setuid bit is set: file runs as owner ({uname}) when executed."
-                )
+                &format!("setuid bit is set: file runs as owner ({uname}) when executed.")
             )
         );
     } else if mode & 0o002 != 0 && !is_symlink && !is_dir {
@@ -363,7 +362,11 @@ fn format_acl_entry(entry: &str) -> String {
     };
     let vis_cols = qual_text.chars().count();
     const QUAL_COL: usize = 16;
-    let pad = if vis_cols < QUAL_COL { QUAL_COL - vis_cols } else { 2 };
+    let pad = if vis_cols < QUAL_COL {
+        QUAL_COL - vis_cols
+    } else {
+        2
+    };
     // Paint qualifier.
     let qual_style = match kind {
         "user" => Style::User,

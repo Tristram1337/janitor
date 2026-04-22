@@ -146,12 +146,7 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
                     reason: "error".into(),
                 }
             });
-            let bits = format!(
-                "r={} w={} x={}",
-                ynb(d.read),
-                ynb(d.write),
-                ynb(d.exec)
-            );
+            let bits = format!("r={} w={} x={}", ynb(d.read), ynb(d.write), ynb(d.exec));
             let verdict_style = if blocker_idx.is_some() {
                 Style::Deny
             } else if d.read {
@@ -159,7 +154,11 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
             } else {
                 Style::Deny
             };
-            format!("{}   {}", paint(verdict_style, &bits), paint(Style::Label, &format!("via {}", d.reason)))
+            format!(
+                "{}   {}",
+                paint(verdict_style, &bits),
+                paint(Style::Label, &format!("via {}", d.reason))
+            )
         } else {
             // Ancestor: traverse verdict.
             let d = effective_for_user_path(p, &username).unwrap_or_else(|_| {
@@ -194,13 +193,14 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
         let path_visual = format!("{}{}", path_disp, acl_hint);
         // Left-align path column with manual padding over visible width.
         let pad = path_w.saturating_sub(path_disp.chars().count());
+        let sym_owner = format!("{sym}  {owner}");
         println!(
             "  {}  {}{}  {}  {}  {}",
             marker,
             path_visual,
             " ".repeat(pad.max(1)),
             oct,
-            format!("{}  {}", sym, owner),
+            sym_owner,
             rhs
         );
     }
@@ -252,7 +252,13 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
     );
 
     // Try-hints.
-    let (hints, hint_title) = suggest_fixes(&target, &username, blocker_idx.map(|i| &chain[i]), &target_d, traversable);
+    let (hints, hint_title) = suggest_fixes(
+        &target,
+        &username,
+        blocker_idx.map(|i| &chain[i]),
+        &target_d,
+        traversable,
+    );
     if !hints.is_empty() {
         println!();
         println!("  {}", paint(Style::Label, hint_title));

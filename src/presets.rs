@@ -2,7 +2,7 @@
 
 use crate::chperm::cmd_chmod;
 use crate::errors::{PmError, Result};
-use crate::render::{paint, rule, Style};
+use crate::render::{paint, Style};
 
 #[derive(Copy, Clone, PartialEq, Eq)]
 pub enum PresetKind {
@@ -11,25 +11,120 @@ pub enum PresetKind {
 }
 
 pub const PRESETS: &[(&str, &str, &str, PresetKind)] = &[
-    ("private", "700", "owner only (dir or file)", PresetKind::Dir),
-    ("private-dir", "700", "directory visible to owner only", PresetKind::Dir),
-    ("private-file", "600", "file rw by owner only", PresetKind::File),
-    ("group-shared", "770", "rwx owner + group, none other", PresetKind::Dir),
-    ("group-read", "750", "rwx owner, rx group, none other", PresetKind::Dir),
-    ("public-read", "755", "rwx owner, rx group, rx other", PresetKind::Dir),
-    ("public-file", "644", "rw owner, r group, r other", PresetKind::File),
-    ("sticky-dir", "1777", "world-writable with sticky bit (/tmp style)", PresetKind::Dir),
-    ("setgid-dir", "2775", "group-shared dir, setgid (new files inherit group)", PresetKind::Dir),
-    ("secret", "400", "read-only for owner, nobody else", PresetKind::File),
-    ("secret-dir", "500", "owner-only directory, read-only", PresetKind::Dir),
-    ("exec-only", "711", "owner rwx; others may traverse but not list", PresetKind::Dir),
-    ("ssh-key", "600", "private SSH key / secret file (owner rw)", PresetKind::File),
-    ("ssh-dir", "700", "SSH / secret directory (owner rwx)", PresetKind::Dir),
-    ("config", "640", "service config (owner rw, group r)", PresetKind::File),
-    ("log-file", "640", "log file (owner rw, group r)", PresetKind::File),
-    ("systemd-unit", "644", "systemd unit / service file (rw/r/r)", PresetKind::File),
-    ("read-only", "444", "read-only for everyone (legal-hold style)", PresetKind::File),
-    ("no-access", "000", "no access for anyone (placeholder)", PresetKind::File),
+    (
+        "private",
+        "700",
+        "owner only (dir or file)",
+        PresetKind::Dir,
+    ),
+    (
+        "private-dir",
+        "700",
+        "directory visible to owner only",
+        PresetKind::Dir,
+    ),
+    (
+        "private-file",
+        "600",
+        "file rw by owner only",
+        PresetKind::File,
+    ),
+    (
+        "group-shared",
+        "770",
+        "rwx owner + group, none other",
+        PresetKind::Dir,
+    ),
+    (
+        "group-read",
+        "750",
+        "rwx owner, rx group, none other",
+        PresetKind::Dir,
+    ),
+    (
+        "public-read",
+        "755",
+        "rwx owner, rx group, rx other",
+        PresetKind::Dir,
+    ),
+    (
+        "public-file",
+        "644",
+        "rw owner, r group, r other",
+        PresetKind::File,
+    ),
+    (
+        "sticky-dir",
+        "1777",
+        "world-writable with sticky bit (/tmp style)",
+        PresetKind::Dir,
+    ),
+    (
+        "setgid-dir",
+        "2775",
+        "group-shared dir, setgid (new files inherit group)",
+        PresetKind::Dir,
+    ),
+    (
+        "secret",
+        "400",
+        "read-only for owner, nobody else",
+        PresetKind::File,
+    ),
+    (
+        "secret-dir",
+        "500",
+        "owner-only directory, read-only",
+        PresetKind::Dir,
+    ),
+    (
+        "exec-only",
+        "711",
+        "owner rwx; others may traverse but not list",
+        PresetKind::Dir,
+    ),
+    (
+        "ssh-key",
+        "600",
+        "private SSH key / secret file (owner rw)",
+        PresetKind::File,
+    ),
+    (
+        "ssh-dir",
+        "700",
+        "SSH / secret directory (owner rwx)",
+        PresetKind::Dir,
+    ),
+    (
+        "config",
+        "640",
+        "service config (owner rw, group r)",
+        PresetKind::File,
+    ),
+    (
+        "log-file",
+        "640",
+        "log file (owner rw, group r)",
+        PresetKind::File,
+    ),
+    (
+        "systemd-unit",
+        "644",
+        "systemd unit / service file (rw/r/r)",
+        PresetKind::File,
+    ),
+    (
+        "read-only",
+        "444",
+        "read-only for everyone (legal-hold style)",
+        PresetKind::File,
+    ),
+    (
+        "no-access",
+        "000",
+        "no access for anyone (placeholder)",
+        PresetKind::File,
+    ),
 ];
 
 pub fn cmd_list_presets() {
@@ -37,7 +132,10 @@ pub fn cmd_list_presets() {
     println!();
     println!("  {}", paint(Style::Primary, "available presets"));
     println!();
-    for (label, kind) in [("directories", PresetKind::Dir), ("files", PresetKind::File)] {
+    for (label, kind) in [
+        ("directories", PresetKind::Dir),
+        ("files", PresetKind::File),
+    ] {
         println!("  {}", paint(Style::Label, label));
         let header = &["name", "mode", "description"];
         let rows: Vec<Vec<String>> = PRESETS
@@ -46,7 +144,10 @@ pub fn cmd_list_presets() {
             .map(|(name, mode, desc, _)| {
                 vec![
                     paint(Style::Primary, name),
-                    paint(Style::Primary, &format!("0{}", mode.trim_start_matches('0'))),
+                    paint(
+                        Style::Primary,
+                        &format!("0{}", mode.trim_start_matches('0')),
+                    ),
                     paint(Style::Label, desc),
                 ]
             })
@@ -90,7 +191,10 @@ pub fn cmd_apply_preset(
             paint(Style::Label, "preset"),
             paint(Style::Primary, preset.0),
             paint(Style::Separator, "→"),
-            paint(Style::Primary, &format!("mode 0{}", preset.1.trim_start_matches('0')))
+            paint(
+                Style::Primary,
+                &format!("mode 0{}", preset.1.trim_start_matches('0'))
+            )
         );
         println!("  {}", paint(Style::Label, preset.2));
     }
@@ -135,9 +239,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
         curr[0] = i;
         for j in 1..=n {
             let cost = if a[i - 1] == b[j - 1] { 0 } else { 1 };
-            curr[j] = (prev[j] + 1)
-                .min(curr[j - 1] + 1)
-                .min(prev[j - 1] + cost);
+            curr[j] = (prev[j] + 1).min(curr[j - 1] + 1).min(prev[j - 1] + cost);
         }
         std::mem::swap(&mut prev, &mut curr);
     }

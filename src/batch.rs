@@ -136,7 +136,9 @@ pub fn cmd_batch(file: &str, dry_run: bool) -> Result<()> {
                     apply_chmod_to_paths(&op.paths, mode_spec, None, dry_run).map(|_| ())
                 }
                 Action::Chown(u, g) => apply_chown_to_paths(&op.paths, *u, *g, dry_run).map(|_| ()),
-                Action::Preset(mode) => apply_chmod_to_paths(&op.paths, mode, None, dry_run).map(|_| ()),
+                Action::Preset(mode) => {
+                    apply_chmod_to_paths(&op.paths, mode, None, dry_run).map(|_| ())
+                }
             };
             if let Err(e) = r {
                 return Err(PmError::Other(format!("batch line {}: {e}", op.line_no)));

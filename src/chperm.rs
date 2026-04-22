@@ -425,12 +425,19 @@ pub fn cmd_chmod(
         let u_s = u.to_string();
         let f_s = f.to_string();
         let segs: Vec<(&str, &str)> = vec![
-            (c_s.as_str(), if dry_run { "would change" } else { "changed" }),
+            (
+                c_s.as_str(),
+                if dry_run { "would change" } else { "changed" },
+            ),
             (u_s.as_str(), "unchanged"),
             (if f > 0 { f_s.as_str() } else { "" }, "failed"),
         ];
         eprintln!("{}", summary_line(&segs));
-        if f > 0 { Err(PmError::Other(format!("{f} path(s) failed"))) } else { Ok(()) }
+        if f > 0 {
+            Err(PmError::Other(format!("{f} path(s) failed")))
+        } else {
+            Ok(())
+        }
     })
 }
 
@@ -492,12 +499,19 @@ pub fn cmd_chown(
         let u_s = u.to_string();
         let f_s = f.to_string();
         let segs: Vec<(&str, &str)> = vec![
-            (c_s.as_str(), if dry_run { "would change" } else { "changed" }),
+            (
+                c_s.as_str(),
+                if dry_run { "would change" } else { "changed" },
+            ),
             (u_s.as_str(), "unchanged"),
             (if f > 0 { f_s.as_str() } else { "" }, "failed"),
         ];
         eprintln!("{}", summary_line(&segs));
-        if f > 0 { Err(PmError::Other(format!("{f} path(s) failed"))) } else { Ok(()) }
+        if f > 0 {
+            Err(PmError::Other(format!("{f} path(s) failed")))
+        } else {
+            Ok(())
+        }
     })
 }
 
@@ -591,7 +605,11 @@ pub fn cmd_copy_perms(
             "           acl   {}",
             paint(
                 Style::Label,
-                if src_has_acl { "present (will be copied)" } else { "none" }
+                if src_has_acl {
+                    "present (will be copied)"
+                } else {
+                    "none"
+                }
             )
         );
         println!(
@@ -662,7 +680,10 @@ pub fn cmd_copy_perms(
                     }
                     println!(
                         "  [dry-run] {}  {}",
-                        paint(Style::Label, &format!("chmod {src_mode:04o} chown {src_user}:{src_group}")),
+                        paint(
+                            Style::Label,
+                            &format!("chmod {src_mode:04o} chown {src_user}:{src_group}")
+                        ),
                         paint(Style::Primary, &t.display().to_string())
                     );
                 }
@@ -731,7 +752,14 @@ pub fn cmd_copy_perms(
             );
         }
         let n_s = changed.to_string();
-        let segs: Vec<(&str, &str)> = vec![(n_s.as_str(), if changed == 1 { "path updated" } else { "paths updated" })];
+        let segs: Vec<(&str, &str)> = vec![(
+            n_s.as_str(),
+            if changed == 1 {
+                "path updated"
+            } else {
+                "paths updated"
+            },
+        )];
         eprintln!("{}", summary_line(&segs));
         Ok(())
     })

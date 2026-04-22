@@ -147,11 +147,13 @@ pub fn cmd_policy_apply(file: &str, dry_run: bool) -> Result<()> {
         // Phase 3: apply each rule.
         for pl in &plans {
             if let Some(m) = &pl.mode {
-                apply_chmod_to_paths(&pl.paths, m, None, dry_run).map(|_| ())
+                apply_chmod_to_paths(&pl.paths, m, None, dry_run)
+                    .map(|_| ())
                     .map_err(|e| PmError::Other(format!("policy rule {:?}: {e}", pl.rule.path)))?;
             }
             if let Some((u, g)) = pl.chown {
-                apply_chown_to_paths(&pl.paths, u, g, dry_run).map(|_| ())
+                apply_chown_to_paths(&pl.paths, u, g, dry_run)
+                    .map(|_| ())
                     .map_err(|e| PmError::Other(format!("policy rule {:?}: {e}", pl.rule.path)))?;
             }
         }

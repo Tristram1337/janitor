@@ -112,8 +112,16 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
                     paint(Style::WarnMajor, "~"),
                     paint(Style::Primary, &disp)
                 );
-                println!("      {}  {}", paint(Style::Label, "A:"), paint(Style::Label, &fmt_snap_kv(x)));
-                println!("      {}  {}", paint(Style::Label, "B:"), paint(Style::Label, &fmt_snap_kv(y)));
+                println!(
+                    "      {}  {}",
+                    paint(Style::Label, "A:"),
+                    paint(Style::Label, &fmt_snap_kv(x))
+                );
+                println!(
+                    "      {}  {}",
+                    paint(Style::Label, "B:"),
+                    paint(Style::Label, &fmt_snap_kv(y))
+                );
             }
             (Some(x), None) => {
                 only_a += 1;
@@ -127,7 +135,11 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
                     paint(Style::Label, "A:"),
                     paint(Style::Label, &fmt_snap_kv(x))
                 );
-                println!("      {}  {}", paint(Style::Label, "B:"), paint(Style::Label, "(missing)"));
+                println!(
+                    "      {}  {}",
+                    paint(Style::Label, "B:"),
+                    paint(Style::Label, "(missing)")
+                );
             }
             (None, Some(y)) => {
                 only_b += 1;
@@ -136,7 +148,11 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
                     paint(Style::Ok, "+"),
                     paint(Style::Primary, &disp)
                 );
-                println!("      {}  {}", paint(Style::Label, "A:"), paint(Style::Label, "(missing)"));
+                println!(
+                    "      {}  {}",
+                    paint(Style::Label, "A:"),
+                    paint(Style::Label, "(missing)")
+                );
                 println!(
                     "      {}  {}",
                     paint(Style::Label, "B:"),
@@ -149,7 +165,11 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
 
     println!();
     if changed == 0 && only_a == 0 && only_b == 0 {
-        println!("  {}  {}", paint(Style::Ok, "✓"), paint(Style::Primary, "identical"));
+        println!(
+            "  {}  {}",
+            paint(Style::Ok, "✓"),
+            paint(Style::Primary, "identical")
+        );
         println!();
         return Ok(());
     }
@@ -160,5 +180,6 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
         only_a,
         only_b
     );
-    Ok(())
+    // Non-zero exit lets callers (CI, shell `if`) detect drift.
+    std::process::exit(1);
 }

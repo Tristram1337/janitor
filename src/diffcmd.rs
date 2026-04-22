@@ -76,7 +76,10 @@ pub fn cmd_diff(backup_id: &str, as_json: bool) -> Result<()> {
     println!(
         "  {}  {}",
         paint(Style::Primary, "diff"),
-        paint(Style::Label, &format!("backup {backup_id}  →  current state"))
+        paint(
+            Style::Label,
+            &format!("backup {backup_id}  →  current state")
+        )
     );
     println!();
     for d in &diffs {
@@ -122,7 +125,11 @@ pub fn cmd_diff(backup_id: &str, as_json: bool) -> Result<()> {
     }
     println!();
     let n = diffs.len();
-    let word = if n == 1 { "entry differs" } else { "entries differ" };
+    let word = if n == 1 {
+        "entry differs"
+    } else {
+        "entries differ"
+    };
     eprintln!(
         "{}  {}  {}",
         paint(Style::Label, "summary:"),

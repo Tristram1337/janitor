@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use nix::unistd::{Gid, Uid};
 
-use crate::acl::has_extended_acl;
 use crate::access::effective_for_user_path;
+use crate::acl::has_extended_acl;
 use crate::cli::ColorMode;
 use crate::errors::Result;
 use crate::helpers::{path_chain, resolve_path};
@@ -113,27 +113,59 @@ pub fn cmd_tree(
     let segs: Vec<(&str, &str)> = vec![
         (dirs.as_str(), dir_word),
         (files.as_str(), file_word),
-        (if counts.setuid > 0 { setuid.as_str() } else { "" }, "setuid"),
-        (if counts.setgid > 0 { setgid.as_str() } else { "" }, "setgid"),
-        (if counts.sticky > 0 { sticky.as_str() } else { "" }, "sticky"),
-        (if counts.world_write > 0 { ww.as_str() } else { "" }, "world-writable"),
+        (
+            if counts.setuid > 0 {
+                setuid.as_str()
+            } else {
+                ""
+            },
+            "setuid",
+        ),
+        (
+            if counts.setgid > 0 {
+                setgid.as_str()
+            } else {
+                ""
+            },
+            "setgid",
+        ),
+        (
+            if counts.sticky > 0 {
+                sticky.as_str()
+            } else {
+                ""
+            },
+            "sticky",
+        ),
+        (
+            if counts.world_write > 0 {
+                ww.as_str()
+            } else {
+                ""
+            },
+            "world-writable",
+        ),
         (if counts.acl > 0 { acl.as_str() } else { "" }, "acl"),
         (if counts.orphan > 0 { orp.as_str() } else { "" }, "orphan"),
-        (if counts.denied > 0 { den.as_str() } else { "" }, "unreadable"),
+        (
+            if counts.denied > 0 { den.as_str() } else { "" },
+            "unreadable",
+        ),
     ];
     println!("{}", summary_line(&segs));
 
     // Legend (only in TTY with colors on).
-    if for_user.is_some() && render::colors_on() {
-        println!();
-        let u = for_user.unwrap();
-        println!(
-            "  {} readable by {}    {} traverse-only    {} no access",
-            paint(Style::Ok, "●"),
-            paint(Style::User, u),
-            paint(Style::Traverse, "●"),
-            paint(Style::Deny, "●"),
-        );
+    if let Some(u) = for_user {
+        if render::colors_on() {
+            println!();
+            println!(
+                "  {} readable by {}    {} traverse-only    {} no access",
+                paint(Style::Ok, "●"),
+                paint(Style::User, u),
+                paint(Style::Traverse, "●"),
+                paint(Style::Deny, "●"),
+            );
+        }
     }
     if !highlight_set.is_empty() && render::colors_on() {
         println!(
@@ -315,8 +347,8 @@ fn print_line(
     // Access-lens coloring for -U.
     let mut self_reachable = parent_reachable;
     let lens = for_user.map(|user| {
-        let d = effective_for_user_path(path, user)
-            .unwrap_or_else(|_| crate::access::AccessDecision {
+        let d =
+            effective_for_user_path(path, user).unwrap_or_else(|_| crate::access::AccessDecision {
                 read: false,
                 write: false,
                 exec: false,
@@ -348,7 +380,11 @@ fn print_line(
 
     // Owner : group.
     let user_style = if u_orphan { Style::Danger } else { Style::User };
-    let group_style = if g_orphan { Style::Danger } else { Style::Group };
+    let group_style = if g_orphan {
+        Style::Danger
+    } else {
+        Style::Group
+    };
     let owner = format!(
         "{}{}{}",
         paint(user_style, &uname),
@@ -412,37 +448,23 @@ fn print_line(
 
     // Badges (setuid/setgid/sticky/world-writable/acl/orphan).
     let mut badges: Vec<String> = Vec::new();
-    let mut badge_raw_cols = 0usize;
-    let mut push_badge = |label: &str, style: Style, badges: &mut Vec<String>, cols: &mut usize| {
-        badges.push(badge(label, style));
-        // Visible width: "[label]" = label.len() + 2
-        *cols += 2 + label.chars().count() + 2; // '  ' gutter + brackets + label
-        let _ = cols;
-    };
-    let _ = &mut push_badge;
     if mode & 0o4000 != 0 {
         badges.push(badge("setuid", Style::WarnMajor));
-        badge_raw_cols += 2 + "[setuid]".chars().count();
     }
     if mode & 0o2000 != 0 {
         badges.push(badge("setgid", Style::WarnMajor));
-        badge_raw_cols += 2 + "[setgid]".chars().count();
     }
     if mode & 0o1000 != 0 {
         badges.push(badge("sticky", Style::WarnMajor));
-        badge_raw_cols += 2 + "[sticky]".chars().count();
     }
     if mode & 0o002 != 0 && !is_symlink && !is_dir {
         badges.push(badge("world-writable", Style::Danger));
-        badge_raw_cols += 2 + "[world-writable]".chars().count();
     }
     if show_acl && acl_here {
         badges.push(badge("acl", Style::AclMarker));
-        badge_raw_cols += 2 + "[acl]".chars().count();
     }
     if u_orphan || g_orphan {
         badges.push(badge("orphan", Style::Danger));
-        badge_raw_cols += 2 + "[orphan]".chars().count();
     }
     let badges_str = if badges.is_empty() {
         String::new()
@@ -460,9 +482,7 @@ fn print_line(
     };
     let gap = " ".repeat(pad);
 
-    println!(
-        "{prefix}{marker}{name}{gap}{mode_str}  {owner}{badges_str}"
-    );
+    println!("{prefix}{marker}{name}{gap}{mode_str}  {owner}{badges_str}");
 
     (self_reachable, Some(md))
 }

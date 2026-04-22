@@ -413,6 +413,15 @@ Common recipes:\n  \
         /// `strip-setgid`, `strip-sticky`, `preset NAME`.
         #[arg(long = "fix", value_name = "ACTION")]
         fix: Option<String>,
+        /// Emit just the matching paths (one per line, no table, no colors,
+        /// no summary — pipe-pure). Ideal for piping into `janitor chmod`
+        /// or `xargs`. Combine with `-0` for NUL-separated output.
+        #[arg(long = "paths", conflicts_with_all = ["fix"])]
+        paths: bool,
+        /// Same as --paths but NUL-separated. Use with
+        /// `janitor chmod --stdin0 ...` for safe handling of odd names.
+        #[arg(short = '0', long = "print0", conflicts_with_all = ["fix"])]
+        print0: bool,
     },
 
     /// Find files whose UID or GID is not in /etc/passwd or /etc/group.
@@ -435,50 +444,43 @@ Common recipes:\n  \
     #[command(subcommand)]
     Acl(AclCmd),
 
-    /// Apply a named preset (`private`, `group-shared`, `setgid-dir`, etc.).
+    /// Named permission presets (`preset list`, `preset apply NAME PATH`).
     #[command(
         visible_alias = "p",
-        long_about = "Apply a named permission preset to PATH (see `janitor presets` for \
-the full list). A snapshot is taken first; revert with `janitor restore <id>`.\n\n\
-Without -R, only PATH itself is changed. With -R, the same mode is applied to \
-every file and subdirectory under PATH (the whole tree is walked)."
+        subcommand,
+        long_about = "Named permission presets such as `private` (0600/0700), \
+`group-shared` (0660/2770), `setgid-dir`, etc. `preset list` shows all \
+available presets with their modes; `preset apply NAME PATH` applies one \
+(snapshot-first; revert with `janitor restore <id>`)."
     )]
-    Preset {
-        /// Preset name (see `janitor presets`).
-        name: String,
-        /// Target path(s).
-        #[arg(value_name = "PATH", required = true)]
-        paths: Vec<String>,
-        /// Also apply to every file and subdirectory under PATH (walked recursively).
-        #[arg(short = 'R', long)]
-        recursive: bool,
-        /// Skip any path matching this glob (repeatable, matches full path or basename).
-        #[arg(short = 'E', long = "exclude", value_name = "GLOB")]
-        exclude: Vec<String>,
-    },
-
-    /// List all available presets with their modes.
-    Presets,
+    Preset(PresetCmd),
 
     /// Seal a directory tree to a uniform baseline, with surgical per-path pinholes.
     #[command(
         long_about = "Seal is the atomic combination of `chown -R` + `chmod -R` + \
 `setfacl` for 'make this tree uniform, except for a handful of exceptions'.\n\n\
+The baseline (--base USER:GROUP:MODE) uses POSIX mode bits only — no ACLs \
+are written unless you add --allow / --allow-group pinholes. So a plain \
+`janitor seal DIR -B root:root:700 -R` works on any filesystem, FAT \
+included.\n\n\
 Typical use: you have /srv/secrets that should be root:root 0700 everywhere, \
 but two specific files must be readable by one specific user. Without seal, \
 this takes 9+ commands (chown, chmod, then setfacl -m u:USER:--x on every \
 parent directory, then the final rwx entry) and one typo silently breaks \
 the pinhole. With seal, it's one transaction with one backup.\n\n\
-Example:\n  \
+Example (POSIX-only, no ACLs written):\n  \
+  janitor seal /srv/secrets -B root:root:700 -R\n\n\
+Example with pinholes (adds ACLs only on the pinhole chain):\n  \
   janitor seal /srv/secrets \\\n    \
     --base root:root:700 --recursive \\\n    \
     --allow bob:r  /srv/secrets/company/.env \\\n    \
     --allow alice:rw /srv/secrets/shared/config.yaml \\\n    \
     --dry-run\n\n\
-Auto-traverse: seal automatically adds `u:USER:--x` ACL entries on every \
-parent directory between --base and each --allow target, so the pinhole \
-actually reaches the intended file. This is the #1 source of silent \
-'why can't they read it?' failures with manual setfacl.\n\n\
+Auto-traverse: when pinholes are given, seal automatically adds \
+`u:USER:--x` ACL entries on every parent directory between --base and \
+each --allow target, so the pinhole actually reaches the intended file. \
+This is the #1 source of silent 'why can't they read it?' failures with \
+manual setfacl.\n\n\
 One snapshot is taken for the entire operation; revert with `restore <id>`.",
         after_help = "see also: `grant`, `acl grant`, `restore`, `policy apply`"
     )]
@@ -506,63 +508,6 @@ One snapshot is taken for the entire operation; revert with `restore <id>`.",
         /// Skip any path matching this glob (repeatable).
         #[arg(short = 'E', long = "exclude", value_name = "GLOB")]
         exclude: Vec<String>,
-    },
-
-    /// Find paths matching a filesystem predicate (read-only; use with `batch` to mutate).
-    #[command(
-        long_about = "Read-only search over a directory tree, similar to `find(1)` but \
-focused on permissions. Prints matching paths to stdout, one per line (or NUL-separated \
-with -0, so it pipes cleanly into `janitor chmod --stdin0`).\n\n\
-Example: `janitor find /srv -mode 777 -0 | sudo janitor chmod --stdin0 750`"
-    )]
-    Find {
-        /// Root of the scan.
-        path: String,
-        /// Only entries whose mode equals this octal.
-        #[arg(short = 'm', long = "mode", value_name = "OCTAL")]
-        mode: Option<String>,
-        /// Only world-writable.
-        #[arg(short = 'W', long = "world-writable")]
-        world_writable: bool,
-        /// Only world-readable.
-        #[arg(short = 'r', long = "world-readable")]
-        world_readable: bool,
-        /// Only world-executable.
-        #[arg(short = 'x', long = "world-executable")]
-        world_executable: bool,
-        /// Only setuid.
-        #[arg(short = 's', long)]
-        setuid: bool,
-        /// Only setgid.
-        #[arg(short = 'S', long)]
-        setgid: bool,
-        /// Only sticky.
-        #[arg(short = 't', long)]
-        sticky: bool,
-        /// Only files owned by USER.
-        #[arg(short = 'o', long)]
-        owner: Option<String>,
-        /// Only files with group GROUP.
-        #[arg(short = 'g', long)]
-        group: Option<String>,
-        /// Only files with POSIX ACLs.
-        #[arg(short = 'A', long = "has-acl")]
-        has_acl: bool,
-        /// Skip paths matching this glob (repeatable).
-        #[arg(short = 'E', long = "exclude", value_name = "GLOB")]
-        exclude: Vec<String>,
-        /// Descend into pseudo-filesystems (/proc, /sys, /dev, cgroup, …).
-        #[arg(long = "include-pseudo")]
-        include_pseudo: bool,
-        /// Output NUL-separated (pair with `chmod --stdin0`).
-        #[arg(short = '0', long = "print0")]
-        print0: bool,
-        /// Print only the match count, not the paths.
-        #[arg(long = "count")]
-        count: bool,
-        /// Print at most N matches, then stop.
-        #[arg(long = "head", value_name = "N")]
-        head: Option<usize>,
     },
 
     /// Explain why a user can (or cannot) read / write / execute PATH.
@@ -682,6 +627,32 @@ pub enum PolicyCmd {
     Verify {
         /// Policy YAML file.
         file: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PresetCmd {
+    /// List all available presets with their modes.
+    List,
+    /// Apply a named preset to one or more paths.
+    #[command(
+        long_about = "Apply a named permission preset to PATH (see `preset list` for \
+the full set). A snapshot is taken first; revert with `janitor restore <id>`.\n\n\
+Without -R, only PATH itself is changed. With -R, the same mode is applied to \
+every file and subdirectory under PATH (the whole tree is walked)."
+    )]
+    Apply {
+        /// Preset name (see `preset list`).
+        name: String,
+        /// Target path(s).
+        #[arg(value_name = "PATH", required = true)]
+        paths: Vec<String>,
+        /// Also apply to every file and subdirectory under PATH (walked recursively).
+        #[arg(short = 'R', long)]
+        recursive: bool,
+        /// Skip any path matching this glob (repeatable, matches full path or basename).
+        #[arg(short = 'E', long = "exclude", value_name = "GLOB")]
+        exclude: Vec<String>,
     },
 }
 

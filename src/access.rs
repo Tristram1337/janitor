@@ -224,11 +224,12 @@ fn evaluate_acl(
     // Rule 3: named user match.
     for (name, bits) in &named_users {
         if matches_user(name, username, uid) {
-            let eff = if mask_present { bits & mask_bits } else { *bits };
-            return Some(decision_from_bits(
-                eff,
-                format!("acl user:{name} ∧ mask"),
-            ));
+            let eff = if mask_present {
+                bits & mask_bits
+            } else {
+                *bits
+            };
+            return Some(decision_from_bits(eff, format!("acl user:{name} ∧ mask")));
         }
     }
 
@@ -277,9 +278,7 @@ fn parse_perm_bits(s: &str) -> Option<u32> {
     let r = matches!(bs[0], 'r');
     let w = matches!(bs[1], 'w');
     let x = matches!(bs[2], 'x');
-    Some(
-        if r { 0o4 } else { 0 } | if w { 0o2 } else { 0 } | if x { 0o1 } else { 0 },
-    )
+    Some(if r { 0o4 } else { 0 } | if w { 0o2 } else { 0 } | if x { 0o1 } else { 0 })
 }
 
 fn matches_user(entry: &str, username: &str, uid: u32) -> bool {

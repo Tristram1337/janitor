@@ -41,9 +41,9 @@ pub fn init_color(mode: ColorMode) {
         ColorMode::Always => true,
         ColorMode::Never => false,
         ColorMode::Auto => {
-            if std::env::var_os("NO_COLOR").is_some() {
-                false
-            } else if std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false) {
+            if std::env::var_os("NO_COLOR").is_some()
+                || std::env::var("TERM").map(|t| t == "dumb").unwrap_or(false)
+            {
                 false
             } else {
                 std::io::stdout().is_terminal()
@@ -246,7 +246,12 @@ pub fn section_title(title: &str) -> String {
 /// painted if needed).
 pub fn kv(key: &str, value: &str, key_width: usize) -> String {
     let pad = key_width.saturating_sub(key.chars().count());
-    format!("{}{}{}", paint(Style::Label, key), " ".repeat(pad + 1), value)
+    format!(
+        "{}{}{}",
+        paint(Style::Label, key),
+        " ".repeat(pad + 1),
+        value
+    )
 }
 
 /// Two side-by-side kv pairs on the same line, each column `col_width` wide
@@ -605,9 +610,7 @@ pub fn visible_width(s: &str) -> usize {
         } else {
             // Count UTF-8 char boundary
             let c = bytes[i];
-            let step = if c < 0x80 {
-                1
-            } else if c < 0xC0 {
+            let step = if c < 0xC0 {
                 1
             } else if c < 0xE0 {
                 2
@@ -670,7 +673,11 @@ pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
             } else {
                 0 // last column: don't pad trailing
             };
-            let padded = if w > 0 { pad_right(cell, w) } else { cell.clone() };
+            let padded = if w > 0 {
+                pad_right(cell, w)
+            } else {
+                cell.clone()
+            };
             out.push_str(&padded);
             if i + 1 < cols {
                 out.push_str("  ");
@@ -690,10 +697,7 @@ pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
 /// Caller is responsible for paint()-ing cells before passing them in.
 pub fn simple_table(header: &[&str], rows: &[Vec<String>]) -> String {
     let mut builder = TableBuilder::default();
-    let header_row: Vec<String> = header
-        .iter()
-        .map(|h| paint(Style::Label, h))
-        .collect();
+    let header_row: Vec<String> = header.iter().map(|h| paint(Style::Label, h)).collect();
     builder.push_record(header_row);
     for r in rows {
         builder.push_record(r.clone());

@@ -1,6 +1,6 @@
 [package]
 name = "janitor"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 rust-version = "1.85"
 description = "Hierarchical Unix filesystem permissions manager with snapshots, ACLs, and audit."
@@ -51,17 +51,24 @@ maintainer = "Tristram1337 <rohovskytomas@seznam.cz>"
 section = "admin"
 priority = "optional"
 depends = "libc6 (>= 2.35), acl, passwd"
+recommends = "bash-completion"
 extended-description = """\
 janitor is a single-binary CLI for managing POSIX file permissions and ACLs
 on Linux systems. It supports hierarchical grants, automatic snapshots before
 every mutation, POSIX ACL management, auditing (world-writable, SUID, orphan
 UIDs/GIDs), reverse access queries, and exact rollback."""
+# Run `scripts/package.sh deb` (not `cargo deb` directly) so the completions
+# and man page under target/assets/ are regenerated from the freshly built
+# binary before the .deb is assembled.
 assets = [
     ["target/release/janitor", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/janitor/README.md", "644"],
     ["CHANGELOG.md", "usr/share/doc/janitor/CHANGELOG.md", "644"],
     ["LICENSE", "usr/share/doc/janitor/copyright", "644"],
-    ["docs/janitor.1", "usr/share/man/man1/janitor.1", "644"],
+    ["target/assets/man/janitor.1", "usr/share/man/man1/janitor.1", "644"],
+    ["target/assets/completions/janitor", "usr/share/bash-completion/completions/janitor", "644"],
+    ["target/assets/completions/_janitor", "usr/share/zsh/vendor-completions/_janitor", "644"],
+    ["target/assets/completions/janitor.fish", "usr/share/fish/vendor_completions.d/janitor.fish", "644"],
 ]
 
 # ---------------------------------------------------------------------------
@@ -73,7 +80,10 @@ assets = [
     { source = "README.md", dest = "/usr/share/doc/janitor/README.md", mode = "644", doc = true },
     { source = "CHANGELOG.md", dest = "/usr/share/doc/janitor/CHANGELOG.md", mode = "644", doc = true },
     { source = "LICENSE", dest = "/usr/share/licenses/janitor/LICENSE", mode = "644" },
-    { source = "docs/janitor.1", dest = "/usr/share/man/man1/janitor.1", mode = "644" },
+    { source = "target/assets/man/janitor.1", dest = "/usr/share/man/man1/janitor.1", mode = "644" },
+    { source = "target/assets/completions/janitor", dest = "/usr/share/bash-completion/completions/janitor", mode = "644" },
+    { source = "target/assets/completions/_janitor", dest = "/usr/share/zsh/site-functions/_janitor", mode = "644" },
+    { source = "target/assets/completions/janitor.fish", dest = "/usr/share/fish/vendor_completions.d/janitor.fish", mode = "644" },
 ]
 [package.metadata.generate-rpm.requires]
 glibc = "*"

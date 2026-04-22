@@ -90,9 +90,7 @@ pub fn cmd_grant(
 
     // ── Narrate: group ensure + user add (dry-run predicts; apply acts) ─
     let group_existed = group_exists(&group_name);
-    let user_in = user
-        .map(|u| user_in_group(u, &group_name))
-        .unwrap_or(true);
+    let user_in = user.map(|u| user_in_group(u, &group_name)).unwrap_or(true);
     narrate_action(
         stdout_tty,
         dry_run,
@@ -188,7 +186,11 @@ pub fn cmd_grant(
             let before_mode = std::fs::symlink_metadata(p).map(|m| m.mode() & 0o7777).ok();
             apply_group_bits(p, &group_name, traverse_bits, dry_run, true)?;
             let after_mode = std::fs::symlink_metadata(p).map(|m| m.mode() & 0o7777).ok();
-            let verb = if dry_run { "would g+rx        " } else { "chmod g+rx        " };
+            let verb = if dry_run {
+                "would g+rx        "
+            } else {
+                "chmod g+rx        "
+            };
             if stdout_tty {
                 let was = match before_mode {
                     Some(m) => format!("  (was {:04o})", m),
@@ -238,7 +240,11 @@ pub fn cmd_grant(
                 paint(Style::Primary, &target.display().to_string()),
                 paint(Style::Group, &group_name)
             );
-            let verb2 = if dry_run { "would chmod       " } else { "chmod             " };
+            let verb2 = if dry_run {
+                "would chmod       "
+            } else {
+                "chmod             "
+            };
             let was = t_before
                 .map(|m| format!("  (was {:04o})", m))
                 .unwrap_or_default();
@@ -505,13 +511,21 @@ fn restore_with_preview(
             println!();
             render::eprint_diag(
                 DiagLevel::Warning,
-                &format!("backup is {} old — state may have drifted since it was taken.", age_str),
+                &format!(
+                    "backup is {} old — state may have drifted since it was taken.",
+                    age_str
+                ),
                 Some("review the diff below carefully."),
                 &[],
             );
         }
     } else {
-        println!("{verb} {} (op: {}, {} entries)", data.id, data.operation.op_type, data.entries.len());
+        println!(
+            "{verb} {} (op: {}, {} entries)",
+            data.id,
+            data.operation.op_type,
+            data.entries.len()
+        );
     }
 
     // Compute and show the diff preview (current vs. recorded state).
@@ -536,7 +550,10 @@ fn restore_with_preview(
             println!("    {}", line);
         }
         if diffs.is_empty() {
-            println!("    {}", paint(Style::Label, "(no changes — current state matches backup)"));
+            println!(
+                "    {}",
+                paint(Style::Label, "(no changes — current state matches backup)")
+            );
         }
     }
 
@@ -637,9 +654,10 @@ fn backup_age(ts: &str) -> String {
 
 fn backup_age_hours(ts: &str) -> Option<i64> {
     let now = chrono::Utc::now();
-    chrono::DateTime::parse_from_rfc3339(ts)
-        .ok()
-        .map(|d| now.signed_duration_since(d.with_timezone(&chrono::Utc)).num_hours())
+    chrono::DateTime::parse_from_rfc3339(ts).ok().map(|d| {
+        now.signed_duration_since(d.with_timezone(&chrono::Utc))
+            .num_hours()
+    })
 }
 
 /// Parse `1h`, `30m`, `2d`, `1w`, `45s` into a `chrono::Duration`.
@@ -736,7 +754,10 @@ pub fn cmd_history(path: &str, since: Option<&str>, as_json: bool) -> Result<()>
         return Ok(());
     }
     if rows.is_empty() {
-        println!("{}", paint(Style::Label, &format!("(no backups touching {path})")));
+        println!(
+            "{}",
+            paint(Style::Label, &format!("(no backups touching {path})"))
+        );
         return Ok(());
     }
     let stdout_tty = is_terminal::is_terminal(std::io::stdout());
@@ -752,7 +773,11 @@ pub fn cmd_history(path: &str, since: Option<&str>, as_json: bool) -> Result<()>
         "  {}",
         paint(
             Style::Primary,
-            &format!("history for {path}  ({} operation{})", rows.len(), if rows.len() == 1 { "" } else { "s" })
+            &format!(
+                "history for {path}  ({} operation{})",
+                rows.len(),
+                if rows.len() == 1 { "" } else { "s" }
+            )
         )
     );
     println!();
@@ -911,7 +936,13 @@ pub fn cmd_list_backups(as_json: bool, path_substr: Option<&str>) -> Result<()> 
         return Ok(());
     }
     if files.is_empty() {
-        println!("{}", paint(Style::Label, &format!("(no backups in {})", crate::config::backup_root().display())));
+        println!(
+            "{}",
+            paint(
+                Style::Label,
+                &format!("(no backups in {})", crate::config::backup_root().display())
+            )
+        );
         return Ok(());
     }
     let stdout_tty = is_terminal::is_terminal(std::io::stdout());
@@ -943,7 +974,15 @@ pub fn cmd_list_backups(as_json: bool, path_substr: Option<&str>) -> Result<()> 
                 let when = data.timestamp.clone();
                 let op_sum = format_op_summary(&data.operation);
                 let (action, target) = format_op_split(&data.operation);
-                rows.push((data.id, age, op_sum, when, data.entries.len(), action, target));
+                rows.push((
+                    data.id,
+                    age,
+                    op_sum,
+                    when,
+                    data.entries.len(),
+                    action,
+                    target,
+                ));
             }
             Err(e) => {
                 let stem = f.file_stem().and_then(|s| s.to_str()).unwrap_or("?");

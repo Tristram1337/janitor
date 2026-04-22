@@ -5,6 +5,65 @@ All notable changes to `janitor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-04-22
+
+Pre-1.0 polishing pass: UX triage, packaging, and correctness fixes. **Breaking
+CLI changes** — see "Changed" below.
+
+### Changed
+- **Breaking:** `preset` is now a subcommand group.
+  `janitor preset NAME PATH` ⇒ `janitor preset apply NAME PATH`, and the
+  separate `presets` command ⇒ `janitor preset list`. Rationale: UX parity
+  with `acl`, `policy`, `attr` (all verb-after-noun), and `presets` as a
+  sibling top-level command duplicated the noun.
+- **Breaking:** `seal` baseline is now POSIX-only by default. A plain
+  `janitor seal DIR -B root:root:700 -R` issues `chown` + `chmod` only and
+  writes no ACLs — it works on FAT, tmpfs, and any filesystem without
+  `acl` support. ACLs are written only for explicit `--allow USER:PERM
+  PATH` / `--allow-group GROUP:PERM PATH` pinholes (and the minimal
+  `u:user:--x` / `g:group:--x` entries on the parent chain needed to
+  reach them). If pinholes are requested on a filesystem without ACL
+  support, `seal` fails fast with a clear error instead of silently
+  producing an unreachable target.
+- `audit` gained `--paths` and `-0` / `--print0` flags for pipe-pure output
+  (one path per line, or NUL-separated). This replaces the old `janitor
+  find -0 | janitor chmod --stdin0` pipeline. Both flags skip the ACL
+  probe when the filter doesn't need it, keeping large scans fast.
+
+### Removed
+- **Breaking:** `janitor find` — its filter set was a subset of `audit`'s, and
+  `audit --paths` / `audit -0` now covers the "produce a list of matching
+  paths" use case it existed for.
+
+### Fixed
+- `who-can` now enumerates users via NSS (`setpwent` / `getpwent` / `endpwent`),
+  so LDAP / SSSD / systemd-homed / FreeIPA directories are visible.
+  Falls back to `/etc/passwd` if NSS yields nothing.
+- `audit` / `find-orphans`: world-writable / world-readable / world-executable
+  filters no longer false-positive on symlinks (whose own mode bits are a
+  kernel artifact on Linux and carry no real meaning). The link target's
+  mode is what governs access, so flagging the link itself was noise.
+- `info`, `who-can`, `explain`, and friends now distinguish `EACCES` (you're
+  not allowed to stat this) from `ENOENT` (it really doesn't exist) in
+  their error messages.
+
+### Packaging
+- `.deb` and `.rpm` now install shell completions and the man page to
+  standard locations:
+  - `bash`: `/usr/share/bash-completion/completions/janitor`
+  - `zsh`:  `/usr/share/zsh/vendor-completions/_janitor` (deb) or
+    `/usr/share/zsh/site-functions/_janitor` (rpm)
+  - `fish`: `/usr/share/fish/vendor_completions.d/janitor.fish`
+  - `man`:  `/usr/share/man/man1/janitor.1.gz`
+  No post-install hookup needed — bash-completion picks up the file lazily
+  the next time the shell sees `janitor`. The deb package `Recommends`
+  `bash-completion`.
+- `scripts/package.sh` (new) drives the full pipeline: builds the release
+  binary, invokes `janitor completions` / `janitor man` to generate
+  assets into `target/assets/...`, then runs `cargo deb --no-build` /
+  `cargo generate-rpm --no-build`. Subcommands: `deb`, `rpm`, `all`,
+  `assets-only`.
+
 ## [0.1.0] - 2026-04-21
 
 First public pre-release. API and CLI surface may still change before 1.0.0.

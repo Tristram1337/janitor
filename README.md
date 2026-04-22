@@ -7,7 +7,7 @@ Hierarchical Unix filesystem permissions manager with snapshots, ACLs, and audit
 - A hierarchical `grant` that walks the parent chain and sets the minimum traverse-only (`--x`) bit on every intermediate directory, so a user can reach a deep file without seeing its siblings.
 - An automatic snapshot before every mutation. A MessagePack backup is written to `/var/lib/janitor/backups` (root) or `~/.local/share/janitor/backups` (user) before any change, so any `grant`, `chmod`, `chown`, or `acl` call can be reverted with `janitor restore <id>` (or `janitor undo` for the most recent one).
 - POSIX ACL support via `setfacl`/`getfacl`, including default ACLs and recursive application.
-- Audit and inspection tooling: `audit`, `find`, `find-orphans`, `who-can`, `explain`, `compare`, `diff`, `export`.
+- Audit and inspection tooling: `audit`, `find-orphans`, `who-can`, `explain`, `compare`, `diff`, `export`.
 
 Safe defaults: `lchown(2)` is used for symlinks, an advisory file lock prevents concurrent mutations, `SIGINT` aborts cleanly with exit 130, and `--dry-run` prints every planned change without touching disk.
 
@@ -175,10 +175,11 @@ single-letter equivalent.
 | `who-can` (`w`) `PATH` | Reverse query: which users can read / write / exec. |
 | `diff ID` / `export ID` | Inspect a backup vs current / dump a backup as text or JSON. |
 | `acl grant\|revoke\|show\|strip PATH [-u USER\|-g GROUP] [-r] [-w] [-x] [-d] [-R]` | POSIX ACL management with snapshots. |
-| `preset` (`p`) `NAME PATH... [-R] [-E GLOB]` | Named modes: `private`, `group-shared`, `setgid-dir`, and more. Accepts many PATHs. |
+| `preset` (`p`) `list` | Show all named modes with their octal values and description. |
+| `preset` (`p`) `apply NAME PATH... [-R] [-E GLOB]` | Apply a named mode (`private`, `group-shared`, `setgid-dir`, `ssh-key`, ...). Accepts many PATHs under one snapshot. |
+| `seal PATH -B USER:GROUP:MODE [-R] [--allow USER:PERM PATH] [--allow-group GROUP:PERM PATH] [-E GLOB]` | Atomic "uniform baseline + surgical pinholes". Baseline is POSIX-only (chown + chmod), ACLs are written only for the `--allow` pinholes and their parent-chain traversal bits. One snapshot covers everything. |
 | `list-backups` (`ls`) `[-p SUBSTR]` / `prune-backups` (`prune`) `[-k N]` | List (optionally filter by target path) / prune snapshots. |
 | `backup` (`b`) `PATH [-R] [-A]` | Snapshot without changing anything. |
-| `find PATH [-m MODE] [-W] [-r] [-x] [-s] [-S] [-t] [-o USER] [-g GROUP] [-A] [-E GLOB] [-0]` | Read-only permission-aware search. `-0` NUL-separates output for piping into `janitor chmod --stdin0`. |
 | `explain` (`e`) `PATH [-U USER]` | Human-readable r/w/x verdict walking the parent chain. |
 | `compare A B [-R]` | Diff mode / owner / group / ACL. Exit 1 on drift. |
 | `lock PATH [-r REASON]` / `unlock PATH` / `locks` | Block all janitor mutations on PATH (and descendants if PATH is a directory). |
@@ -218,7 +219,7 @@ See `man janitor` (or `janitor(1)`) for the full manual with workflows and more 
 | `no-access` | 000 | no permissions at all (panic-button quarantine) |
 
 ```sh
-sudo janitor preset setgid-dir /srv/project --recursive
+sudo janitor preset apply setgid-dir /srv/project --recursive
 ```
 
 ---
@@ -333,27 +334,55 @@ janitor tree /srv/project -P                     # include parent chain
 
 ### preset
 ```sh
-sudo janitor preset private       ~/.gnupg -R                            # mode 700 recursively
-sudo janitor preset private-dir   ~/.config                              # mode 700 directory
-sudo janitor preset private-file  ~/.netrc                               # mode 600 file
-sudo janitor preset group-shared  /srv/team  -R                          # mode 770 recursively
-sudo janitor preset group-read    /srv/docs  -R                          # mode 750 recursively
-sudo janitor preset public-read   /srv/www   -R                          # mode 755 recursively
-sudo janitor preset public-file   /var/www/index.html                    # mode 644 file
-sudo janitor preset sticky-dir    /srv/tmp                               # mode 1777 directory
-sudo janitor preset setgid-dir    /srv/project -R                        # mode 2775 recursively
-sudo janitor preset secret        /etc/secret.key                        # mode 400 file
-sudo janitor preset secret-dir    /root/secrets                          # mode 500 directory
-sudo janitor preset exec-only     /srv/drop                              # mode 711 directory
-sudo janitor preset ssh-key       ~/.ssh/id_ed25519                      # mode 600 private key
-sudo janitor preset ssh-dir       ~/.ssh                                 # mode 700 .ssh directory
-sudo janitor preset config        /etc/myapp.conf                        # mode 640 config file
-sudo janitor preset log-file      /var/log/myapp.log                     # mode 640 log file
-sudo janitor preset systemd-unit  /etc/systemd/system/myapp.service      # mode 644 unit file
-sudo janitor preset read-only     /srv/release.tar.gz                    # mode 444 file
-sudo janitor preset no-access     /srv/quarantine -R                     # mode 000 recursively
-janitor presets                                                          # list preset names and modes
+janitor preset list                                                            # show every preset with its mode
+
+sudo janitor preset apply private       ~/.gnupg -R                            # mode 700 recursively
+sudo janitor preset apply private-dir   ~/.config                              # mode 700 directory
+sudo janitor preset apply private-file  ~/.netrc                               # mode 600 file
+sudo janitor preset apply group-shared  /srv/team  -R                          # mode 770 recursively
+sudo janitor preset apply group-read    /srv/docs  -R                          # mode 750 recursively
+sudo janitor preset apply public-read   /srv/www   -R                          # mode 755 recursively
+sudo janitor preset apply public-file   /var/www/index.html                    # mode 644 file
+sudo janitor preset apply sticky-dir    /srv/tmp                               # mode 1777 directory
+sudo janitor preset apply setgid-dir    /srv/project -R                        # mode 2775 recursively
+sudo janitor preset apply secret        /etc/secret.key                        # mode 400 file
+sudo janitor preset apply secret-dir    /root/secrets                          # mode 500 directory
+sudo janitor preset apply exec-only     /srv/drop                              # mode 711 directory
+sudo janitor preset apply ssh-key       ~/.ssh/id_ed25519                      # mode 600 private key
+sudo janitor preset apply ssh-dir       ~/.ssh                                 # mode 700 .ssh directory
+sudo janitor preset apply config        /etc/myapp.conf                        # mode 640 config file
+sudo janitor preset apply log-file      /var/log/myapp.log                     # mode 640 log file
+sudo janitor preset apply systemd-unit  /etc/systemd/system/myapp.service      # mode 644 unit file
+sudo janitor preset apply read-only     /srv/release.tar.gz                    # mode 444 file
+sudo janitor preset apply no-access     /srv/quarantine -R                     # mode 000 recursively
 ```
+
+### seal (atomic baseline + pinholes)
+```sh
+# Uniform tree: root:root 0700 everywhere, no ACLs written.
+sudo janitor seal /srv/secrets -B root:root:700 -R
+
+# Same baseline, but let alice read two specific files. Seal adds the
+# minimal u:alice:--x ACL entries on every parent directory so she can
+# actually reach them, and the final rwx entry on the leaf. One
+# snapshot covers the whole operation.
+sudo janitor seal /srv/secrets \
+  -B root:root:700 -R \
+  --allow alice:r  /srv/secrets/company/.env \
+  --allow alice:rw /srv/secrets/shared/config.yaml
+```
+
+> **Why pinholes require ACLs.** Once the baseline is `root:root 0700`,
+> no non-root user has `x` on the parent directories, so plain chmod/
+> chown on a single leaf file can't grant access — the EACCES happens
+> before the kernel ever looks at the leaf. The only POSIX-bit options
+> would be `o+x` on every parent (breaks the uniform baseline for
+> everyone) or chgrp'ing the whole chain to a group containing the
+> pinhole user (same problem). A per-user `u:alice:--x` ACL on each
+> parent is the only *surgical* way to give exactly one user traversal
+> while preserving `700` for everybody else. That's why `seal` without
+> `--allow` is pure POSIX, and `seal --allow ...` requires a
+> filesystem with ACL support.
 
 ### copy-perms
 ```sh
@@ -426,7 +455,7 @@ Backups are never touched by `restore` itself, so you can re-apply or re-revert.
 `janitor chmod` and `janitor chown` accept the same argument syntax as the coreutils tools: octal (`0644`, `4755`, `1777`), full symbolic (`u+s`, `g-w`, `a+X`, `+t`), `-R`, and `--reference`. They are not wrappers around `/bin/chmod` or `/bin/chown`; they call `chmod(2)` and `lchown(2)` directly. The behavior is a strict superset:
 
 1. Snapshot-wrapped. Every invocation first records the prior mode, uid, gid (and optionally ACLs) to `<backup>/*.mpk`. A single `janitor undo` reverts the whole call, including recursive walks and variadic `PATH...` lists.
-2. Variadic plus stream input. `chmod 0644 a b c`, `chmod 0644 --from-file list.txt`, and `find ... -print0 | janitor chmod --stdin0 0644` all produce one snapshot covering every path.
+2. Variadic plus stream input. `chmod 0644 a b c`, `chmod 0644 --from-file list.txt`, and `audit ... --format paths0 | janitor chmod --stdin0 0644` all produce one snapshot covering every path.
 3. `-E` / `--exclude GLOB` lets mass operations skip paths by full-path or basename match.
 4. Lock-aware. If a path (or an ancestor) has been `janitor lock`ed, the operation fails with a clear message instead of silently mutating protected state.
 

@@ -7,6 +7,7 @@
 #![allow(clippy::collapsible_else_if)]
 #![allow(dead_code)]
 
+mod access;
 mod acl;
 mod aclcmd;
 mod attr;
@@ -22,14 +23,12 @@ mod config;
 mod diffcmd;
 mod errors;
 mod explain;
-mod find;
 mod groups;
 mod helpers;
 mod info;
 mod locking;
 mod locks;
 mod matcher;
-mod access;
 mod perms;
 mod policy;
 mod presets;
@@ -45,7 +44,7 @@ mod whocan;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use clap::Parser;
-use cli::{AclCmd, AttrCmd, Cli, Command, PolicyCmd};
+use cli::{AclCmd, AttrCmd, Cli, Command, PolicyCmd, PresetCmd};
 
 pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 
@@ -228,6 +227,8 @@ fn run(cli: Cli) -> errors::Result<()> {
             exclude,
             include_pseudo,
             fix,
+            paths,
+            print0,
         } => {
             let mode_num = match mode {
                 Some(s) => Some(chperm::parse_octal(&s)?),
@@ -251,11 +252,16 @@ fn run(cli: Cli) -> errors::Result<()> {
             };
             let ex = matcher::ExcludeSet::new(&exclude)?;
             match fix {
-                Some(action) => audit::cmd_audit_fix(&path, &filter, &ex, &action, dry_run, include_pseudo),
-                None => audit::cmd_audit(&path, &filter, &ex, json, include_pseudo),
+                Some(action) => {
+                    audit::cmd_audit_fix(&path, &filter, &ex, &action, dry_run, include_pseudo)
+                }
+                None => audit::cmd_audit(&path, &filter, &ex, json, include_pseudo, paths, print0),
             }
         }
-        Command::FindOrphans { path, include_pseudo } => audit::cmd_find_orphans(&path, json, include_pseudo),
+        Command::FindOrphans {
+            path,
+            include_pseudo,
+        } => audit::cmd_find_orphans(&path, json, include_pseudo),
         Command::WhoCan { path } => whocan::cmd_who_can(&path, json),
         Command::Info { path, for_user } => info::cmd_info(&path, for_user.as_deref()),
         Command::Acl(sub) => match sub {
@@ -298,19 +304,21 @@ fn run(cli: Cli) -> errors::Result<()> {
             AclCmd::Show { path } => aclcmd::cmd_acl_show(&path),
             AclCmd::Strip { path, recursive } => aclcmd::cmd_acl_strip(&path, recursive, dry_run),
         },
-        Command::Preset {
-            name,
-            paths,
-            recursive,
-            exclude,
-        } => {
-            let ex = matcher::ExcludeSet::new(&exclude)?;
-            presets::cmd_apply_preset(&name, &paths, recursive, &ex, dry_run)
-        }
-        Command::Presets => {
-            presets::cmd_list_presets();
-            Ok(())
-        }
+        Command::Preset(sub) => match sub {
+            PresetCmd::List => {
+                presets::cmd_list_presets();
+                Ok(())
+            }
+            PresetCmd::Apply {
+                name,
+                paths,
+                recursive,
+                exclude,
+            } => {
+                let ex = matcher::ExcludeSet::new(&exclude)?;
+                presets::cmd_apply_preset(&name, &paths, recursive, &ex, dry_run)
+            }
+        },
         Command::Seal {
             base,
             base_spec,
@@ -327,47 +335,6 @@ fn run(cli: Cli) -> errors::Result<()> {
             &exclude,
             dry_run,
         ),
-        Command::Find {
-            path,
-            mode,
-            world_writable,
-            world_readable,
-            world_executable,
-            setuid,
-            setgid,
-            sticky,
-            owner,
-            group,
-            has_acl,
-            exclude,
-            include_pseudo,
-            print0,
-            count,
-            head,
-        } => {
-            let mode_num = match mode {
-                Some(s) => Some(chperm::parse_octal(&s)?),
-                None => None,
-            };
-            let filter = audit::AuditFilter {
-                world_writable,
-                world_readable,
-                world_executable,
-                setuid,
-                setgid,
-                sticky,
-                owner_uid: None,
-                owner_user: owner.as_deref(),
-                group_gid: None,
-                group_name: group.as_deref(),
-                mode_equals: mode_num,
-                has_acl,
-                no_owner: false,
-                no_group: false,
-            };
-            let ex = matcher::ExcludeSet::new(&exclude)?;
-            find::cmd_find(&path, &filter, &ex, print0, count, head, include_pseudo)
-        }
         Command::Explain { path, for_user } => explain::cmd_explain(&path, for_user.as_deref()),
         Command::Compare { a, b, recursive } => compare::cmd_compare(&a, &b, recursive),
         Command::Lock { path, reason } => commands::cmd_lock(&path, reason.as_deref()),

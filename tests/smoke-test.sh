@@ -31,6 +31,18 @@ refute_grep() {
     if ! echo "$2" | grep -q "$3"; then pass "$1"; else fail "$1"; fi
 }
 
+# Capture output as if attached to a TTY. Many janitor commands suppress
+# decorative narration / table output when stdout is a pipe; tests that
+# assert on human-readable wording use this wrapper. Falls back to plain
+# execution if `script` isn't available.
+tty_run() {
+    if command -v script >/dev/null 2>&1; then
+        script -qc "$*" /dev/null 2>&1 | sed 's/\r$//'
+    else
+        eval "$*" 2>&1
+    fi
+}
+
 ROOT=/tmp/pm_smoke
 USER=pm_smoke_user
 USER2=pm_smoke_user2
@@ -72,7 +84,7 @@ assert "acl --help"                  $JAN acl --help
 assert "acl grant --help"            $JAN acl grant --help
 
 VER_OUT=$($JAN --version 2>&1)
-assert_grep "version has 0.1.0"      "$VER_OUT" "0.1.0"
+assert_grep "version has 0.1.1"      "$VER_OUT" "0.1.1"
 
 HLP=$($JAN --help 2>&1)
 assert_grep "help advertises -n"     "$HLP" '\-n, \-\-dry-run'
@@ -107,13 +119,13 @@ $JAN -n grant "$ROOT/deep/dir/target.txt" -u "$USER" -a r > /dev/null 2>&1
 AFTER=$(stat -c '%a' "$ROOT/deep/dir/target.txt")
 if [[ "$BEFORE" == "$AFTER" ]]; then pass "-n dry-run is no-op"; else fail "dry-run changed perms ($BEFORE->$AFTER)"; fi
 
-DRY=$($JAN --dry-run grant "$ROOT/deep/dir/target.txt" --user "$USER" --access r 2>&1)
-assert_grep "dry-run mentions groupadd" "$DRY" "groupadd"
-assert_grep "dry-run mentions gpasswd"  "$DRY" "gpasswd"
-assert_grep "dry-run mentions chgrp"    "$DRY" "chgrp"
+DRY=$(tty_run "$JAN --dry-run grant $ROOT/deep/dir/target.txt --user $USER --access r")
+assert_grep "dry-run narrates group"    "$DRY" "ensure group"
+assert_grep "dry-run narrates add user" "$DRY" "add user"
+assert_grep "dry-run narrates chgrp"    "$DRY" "chgrp"
 
-DRY2=$($JAN -n grant "$ROOT/deep/dir/target.txt" -u "$USER" -a r 2>&1)
-assert_grep "short -n dry-run output"   "$DRY2" "groupadd"
+DRY2=$(tty_run "$JAN -n grant $ROOT/deep/dir/target.txt -u $USER -a r")
+assert_grep "short -n dry-run output"   "$DRY2" "ensure group"
 
 # ── 4. real grant (long flags) ──────────────────────────────────────
 OUT=$($JAN grant "$ROOT/deep/dir/target.txt" --user "$USER" --access r 2>&1)
@@ -129,8 +141,10 @@ BID2=$(echo "$OUT2" | awk '/^backup:/ {print $2}')
 if [[ -n "$BID2" ]]; then pass "grant short -u -a returns bid"; else fail "short grant no bid"; fi
 
 # ── 6. managed group ────────────────────────────────────────────────
-if getent group | grep -q "^pm_tmp_"; then pass "managed group exists"; else fail "managed group missing"; fi
-GRP=$(getent group | awk -F: '/^pm_tmp_/ {print $1; exit}')
+# Managed group names are `pm_<slug>_<hash>`; slug derives from last two
+# non-trivial path components, so the exact prefix varies by target.
+if getent group | grep -q "^pm_"; then pass "managed group exists"; else fail "managed group missing"; fi
+GRP=$(getent group | awk -F: '/^pm_/ {print $1; exit}')
 if id -Gn "$USER" | grep -q "$GRP"; then pass "user in managed group"; else fail "user not in $GRP"; fi
 
 # ── 7. access semantics ─────────────────────────────────────────────
@@ -152,7 +166,7 @@ OUT3=$($JAN g "$ROOT/deep/dir/target.txt" -u "$USER" -a r 2>&1)
 assert_grep "alias g == grant"        "$OUT3" "backup:"
 BID3=$(echo "$OUT3" | awk '/^backup:/ {print $2}')
 
-LS_OUT=$($JAN ls 2>&1)
+LS_OUT=$(tty_run "$JAN ls")
 assert_grep "alias ls == list-backups" "$LS_OUT" "$BID3"
 
 # ── 9. list-backups JSON + short -j ─────────────────────────────────
@@ -198,7 +212,7 @@ touch "$ROOT/undo-probe"
 chmod 600 "$ROOT/undo-probe"
 $JAN chmod 644 "$ROOT/undo-probe" > /dev/null 2>&1
 BEFORE_UNDO=$(stat -c '%a' "$ROOT/undo-probe")
-$JAN undo > /dev/null 2>&1
+$JAN undo --yes > /dev/null 2>&1
 AFTER_UNDO=$(stat -c '%a' "$ROOT/undo-probe")
 if [[ "$BEFORE_UNDO" == "644" && "$AFTER_UNDO" == "600" ]]; then pass "undo reverts most recent change"; else fail "undo before=$BEFORE_UNDO after=$AFTER_UNDO"; fi
 UN_ALIAS=$($JAN u --help 2>&1 | head -1)
@@ -206,13 +220,13 @@ assert_grep "undo alias u"            "$UN_ALIAS" "Undo"
 rm -f "$ROOT/undo-probe"
 
 # ── 12. dry-run restore ─────────────────────────────────────────────
-DR_RESTORE=$($JAN -n restore "$BID3" 2>&1)
-assert_grep "dry-run restore mentions restoring" "$DR_RESTORE" "restoring"
-assert_grep "dry-run restore mentions chmod"     "$DR_RESTORE" "chmod"
+DR_RESTORE=$(tty_run "$JAN -n restore $BID3")
+assert_grep "dry-run restore mentions restoring" "$DR_RESTORE" "restor"
+assert_grep "dry-run restore mentions mode"      "$DR_RESTORE" "mode"
 assert "user still reads after dry-run restore"  runuser -u "$USER" -- cat "$ROOT/deep/dir/target.txt"
 
 # ── 13. real restore ────────────────────────────────────────────────
-$JAN restore "$BID3" > /dev/null 2>&1
+$JAN restore "$BID3" --yes > /dev/null 2>&1
 refute "user cannot read after restore" runuser -u "$USER" -- cat "$ROOT/deep/dir/target.txt"
 
 R_TGT=$(stat -c '%a' "$ROOT/deep/dir/target.txt")
@@ -223,7 +237,7 @@ if [[ "$R_DEEP" == "700" ]]; then pass "parent perms restored"; else fail "paren
 # ── 14. restore via alias `r` ───────────────────────────────────────
 OUT4=$($JAN g "$ROOT/deep/dir/target.txt" -u "$USER" 2>&1)
 BID4=$(echo "$OUT4" | awk '/^backup:/ {print $2}')
-$JAN r "$BID4" > /dev/null 2>&1
+$JAN r "$BID4" --yes > /dev/null 2>&1
 refute "alias r == restore (user lost read)" runuser -u "$USER" -- cat "$ROOT/deep/dir/target.txt"
 
 # ── 15. grant rw ────────────────────────────────────────────────────
@@ -258,14 +272,18 @@ refute "-w conflicts with -a" $JAN grant "$ROOT" -u "$USER" -w -a r
 refute "-x conflicts with -a" $JAN grant "$ROOT" -u "$USER" -x -a r
 
 # ── 16. revoke (long + short + alias) ───────────────────────────────
+# Capture the path's managed group name right before revoke (it is
+# deterministic per-path, but multiple test sections created several
+# pm_* groups — we want the one tied to this file).
+PGRP=$(stat -c '%G' "$ROOT/deep/dir/target.txt")
 $JAN revoke "$ROOT/deep/dir/target.txt" --user "$USER" > /dev/null 2>&1
-if id -Gn "$USER" | grep -q "$GRP"; then fail "user still in group after revoke"; else pass "long revoke removed user"; fi
+if id -Gn "$USER" | tr ' ' '\n' | grep -qx "$PGRP"; then fail "user still in group after revoke"; else pass "long revoke removed user"; fi
 
 # regrant, then revoke via short
 OUT5=$($JAN g "$ROOT/deep/dir/target.txt" -u "$USER" 2>&1)
-GRP2=$(getent group | awk -F: '/^pm_tmp_/ {print $1; exit}')
+PGRP2=$(stat -c '%G' "$ROOT/deep/dir/target.txt")
 $JAN rv "$ROOT/deep/dir/target.txt" -u "$USER" > /dev/null 2>&1
-if id -Gn "$USER" | grep -q "$GRP2"; then fail "alias rv did not revoke"; else pass "alias rv == revoke"; fi
+if id -Gn "$USER" | tr ' ' '\n' | grep -qx "$PGRP2"; then fail "alias rv did not revoke"; else pass "alias rv == revoke"; fi
 
 # ── 17. input validation ────────────────────────────────────────────
 refute "bad --access rejected"        $JAN grant "$ROOT" --user "$USER" --access bogus
@@ -325,7 +343,7 @@ if [[ "$MPK" -ge 1 ]]; then pass "backups in .mpk"; else fail "no .mpk backups";
 chmod -R 700 "$ROOT"
 ln -sf /etc/hostname "$ROOT/deep/dir/mylink"
 SNAP_BID=$($JAN b "$ROOT/deep/dir" -R 2>&1 | awk '/^backup:/ {print $2}')
-$JAN r "$SNAP_BID" > /dev/null 2>&1
+$JAN r "$SNAP_BID" --yes > /dev/null 2>&1
 if [[ -L "$ROOT/deep/dir/mylink" ]]; then pass "symlink survived restore"; else fail "symlink gone"; fi
 HP=$(stat -c '%a' /etc/hostname 2>/dev/null || echo "?")
 if [[ "$HP" == "644" || "$HP" == "?" ]]; then pass "symlink target unmodified"; else fail "target changed ($HP)"; fi
@@ -338,9 +356,9 @@ CHMOD_OUT=$($JAN chmod 644 "$ROOT/deep/dir/target.txt" 2>&1)
 CHMOD_BID=$(echo "$CHMOD_OUT" | awk '/^backup:/ {print $2}')
 NEW_MODE=$(stat -c '%a' "$ROOT/deep/dir/target.txt")
 if [[ "$NEW_MODE" == "644" ]]; then pass "chmod 644 applied"; else fail "chmod mode $NEW_MODE"; fi
-if [[ -n "$CHMOD_BID" ]]; then pass "chmod wrote backup"; else fail "chmod no backup"; fi
+if [[ "$CHMOD_BID" != "" ]]; then pass "chmod wrote backup"; else fail "chmod no backup"; fi
 
-$JAN r "$CHMOD_BID" > /dev/null 2>&1
+$JAN r "$CHMOD_BID" --yes > /dev/null 2>&1
 RESTORED=$(stat -c '%a' "$ROOT/deep/dir/target.txt")
 if [[ "$RESTORED" == "700" ]]; then pass "chmod restore works"; else fail "restore $RESTORED"; fi
 
@@ -443,7 +461,7 @@ CHOWN_BID=$(echo "$CHOWN_OUT" | awk '/^backup:/ {print $2}')
 OWN_R=$(stat -c '%U:%G' "$ROOT/deep/dir/target.txt")
 if [[ "$OWN_R" == "$USER:$USER" ]]; then pass "chown -R recursive"; else fail "chown -R $OWN_R"; fi
 
-$JAN r "$CHOWN_BID" > /dev/null 2>&1
+$JAN r "$CHOWN_BID" --yes > /dev/null 2>&1
 OWN_RB=$(stat -c '%U:%G' "$ROOT/deep/dir/target.txt")
 if [[ "$OWN_RB" == "root:root" ]]; then pass "chown restore works"; else fail "chown restore $OWN_RB"; fi
 
@@ -536,15 +554,15 @@ chown root:root "$ROOT/deep/sibling.txt"
 chmod 644 "$ROOT/deep/dir/target.txt"
 chown root:root "$ROOT/deep/dir/target.txt"
 chmod 755 "$ROOT/deep" "$ROOT/deep/dir"
-WC=$($JAN who-can "$ROOT/deep/dir/target.txt" 2>&1)
-assert_grep "who-can owner line"      "$WC" "owner:"
+WC=$(tty_run "$JAN who-can $ROOT/deep/dir/target.txt")
+assert_grep "who-can owner line"      "$WC" "owner "
 assert_grep "who-can read line"       "$WC" "read"
 
 WJ=$($JAN --json who-can "$ROOT/deep/dir/target.txt" 2>&1)
 if echo "$WJ" | jq -e '.path' > /dev/null 2>&1; then pass "who-can --json"; else fail "who-can --json invalid"; fi
 
-WC_A=$($JAN w "$ROOT/deep/dir/target.txt" 2>&1)
-assert_grep "alias w == who-can"      "$WC_A" "owner:"
+WC_A=$(tty_run "$JAN w $ROOT/deep/dir/target.txt")
+assert_grep "alias w == who-can"      "$WC_A" "owner "
 
 # ── 33. diff + export ───────────────────────────────────────────────
 chmod 600 "$ROOT/deep/dir/target.txt"
@@ -638,31 +656,31 @@ $JAN acl strip "$ROOT/deep/dir/target.txt" > /dev/null 2>&1
 chmod 600 "$ROOT/deep/dir/target.txt"
 setfacl -m u:"$USER":r "$ROOT/deep/dir/target.txt"
 TA=$($JAN tree "$ROOT/deep/dir" --acl -c never 2>&1)
-assert_grep "tree --acl marker +"     "$TA" "+"
+assert_grep "tree --acl marker acl"   "$TA" "acl"
 TAS=$($JAN tree "$ROOT/deep/dir" -A -c never 2>&1)
-assert_grep "tree -A marker short"    "$TAS" "+"
+assert_grep "tree -A marker short"    "$TAS" "acl"
 setfacl -b "$ROOT/deep/dir/target.txt"
 
-# ── 42. presets list ────────────────────────────────────────────────
-PL=$($JAN presets 2>&1)
-assert_grep "presets list private"    "$PL" "private"
-assert_grep "presets list public-read" "$PL" "public-read"
-assert_grep "presets list setgid-dir" "$PL" "setgid-dir"
+# ── 42. preset list ─────────────────────────────────────────────────
+PL=$($JAN preset list 2>&1)
+assert_grep "preset list private"     "$PL" "private"
+assert_grep "preset list public-read" "$PL" "public-read"
+assert_grep "preset list setgid-dir"  "$PL" "setgid-dir"
 
 # ── 43. preset apply + alias `p` ────────────────────────────────────
 mkdir -p "$ROOT/pre_target"
 touch "$ROOT/pre_target/file.txt"
-$JAN preset private-file "$ROOT/pre_target/file.txt" > /dev/null 2>&1
+$JAN preset apply private-file "$ROOT/pre_target/file.txt" > /dev/null 2>&1
 PM_MODE=$(stat -c '%a' "$ROOT/pre_target/file.txt")
 if [[ "$PM_MODE" == "600" ]]; then pass "preset private-file=600"; else fail "preset $PM_MODE"; fi
 
-$JAN p public-read "$ROOT/pre_target/file.txt" > /dev/null 2>&1
+$JAN p apply public-read "$ROOT/pre_target/file.txt" > /dev/null 2>&1
 PM_MODE2=$(stat -c '%a' "$ROOT/pre_target/file.txt")
 if [[ "$PM_MODE2" == "755" ]]; then pass "alias p public-read=755"; else fail "alias p $PM_MODE2"; fi
 
 # preset recursive
 chmod -R 644 "$ROOT/pre_target"
-$JAN preset private -R "$ROOT/pre_target" > /dev/null 2>&1 || $JAN preset private "$ROOT/pre_target" -R > /dev/null 2>&1
+$JAN preset apply private -R "$ROOT/pre_target" > /dev/null 2>&1 || $JAN preset apply private "$ROOT/pre_target" -R > /dev/null 2>&1
 PMR=$(stat -c '%a' "$ROOT/pre_target/file.txt")
 if [[ "$PMR" == "700" ]]; then pass "preset -R recursive"; else fail "preset -R $PMR"; fi
 
@@ -695,7 +713,7 @@ ENT=$(echo "$EXS" | jq -r '.entries | length' 2>/dev/null)
 if [[ -n "$ENT" && "$ENT" -ge 1 ]]; then pass "export -j has entries"; else fail "export -j entries $ENT"; fi
 
 # ── 48. -q quiet flag ──────────────────────────────────────────────
-Q_OUT=$($JAN -q presets 2>&1)
+Q_OUT=$($JAN -q preset list 2>&1)
 # Quiet doesn't suppress data, just chatter; presets should still list
 assert_grep "quiet does not break data" "$Q_OUT" "private"
 
@@ -711,19 +729,19 @@ setfacl -m u:"$USER":rw "$ROOT/deep/dir/target.txt"
 CA=$($JAN chmod 640 "$ROOT/deep/dir/target.txt" -A 2>&1)
 CA_BID=$(echo "$CA" | awk '/^backup:/ {print $2}')
 setfacl -b "$ROOT/deep/dir/target.txt"
-$JAN r "$CA_BID" > /dev/null 2>&1
+$JAN r "$CA_BID" --yes > /dev/null 2>&1
 ACL_BACK=$(getfacl "$ROOT/deep/dir/target.txt" 2>&1)
 assert_grep "restore brings ACL back" "$ACL_BACK" "user:$USER:rw"
 
 # ── 51. info command ────────────────────────────────────────────────
 chmod 4755 "$ROOT/deep/dir/target.txt"
 INFO_OUT=$($JAN info "$ROOT/deep/dir/target.txt" 2>&1)
-assert_grep "info shows path"      "$INFO_OUT" "path:"
+assert_grep "info shows path"      "$INFO_OUT" "target.txt"
 assert_grep "info shows mode"      "$INFO_OUT" "4755"
 assert_grep "info shows symbolic"  "$INFO_OUT" "rws"
 assert_grep "info shows setuid"    "$INFO_OUT" "setuid"
-assert_grep "info shows owner"     "$INFO_OUT" "owner:"
-assert_grep "info shows mtime"     "$INFO_OUT" "mtime:"
+assert_grep "info shows owner"     "$INFO_OUT" "owner "
+assert_grep "info shows mtime"     "$INFO_OUT" "mtime "
 
 # info on dir with sticky
 chmod 1777 "$ROOT/deep/dir"
@@ -734,27 +752,27 @@ assert_grep "info dir symbolic t"  "$ID" "rwt"
 # info -U effective access
 chmod 755 "$ROOT/deep/dir/target.txt"
 IU=$($JAN info "$ROOT/deep/dir/target.txt" -U "$USER" 2>&1)
-assert_grep "info -U access line"  "$IU" "access:"
+assert_grep "info -U access line"  "$IU" "Access for"
 assert_grep "info -U user name"    "$IU" "$USER"
 
 # alias `i`
 IA=$($JAN i "$ROOT/deep/dir/target.txt" 2>&1)
-assert_grep "info alias i"         "$IA" "mode:"
+assert_grep "info alias i"         "$IA" "mode "
 
 # info on symlink
 ln -sf "$ROOT/deep/dir/target.txt" "$ROOT/info-link"
 IS=$($JAN info "$ROOT/info-link" 2>&1)
 assert_grep "info on symlink"      "$IS" "symlink"
-assert_grep "info shows target"    "$IS" "target:"
+assert_grep "info shows target"    "$IS" "→"
 rm -f "$ROOT/info-link"
 
 # ── 52. presets secret-dir + exec-only ──────────────────────────────
 mkdir -p "$ROOT/secretdir" && chmod 755 "$ROOT/secretdir"
-$JAN preset secret-dir "$ROOT/secretdir" > /dev/null 2>&1
+$JAN preset apply secret-dir "$ROOT/secretdir" > /dev/null 2>&1
 SD=$(stat -c '%a' "$ROOT/secretdir")
 if [[ "$SD" == "500" ]]; then pass "preset secret-dir=500"; else fail "secret-dir → $SD"; fi
 chmod 755 "$ROOT/secretdir"
-$JAN preset exec-only "$ROOT/secretdir" > /dev/null 2>&1
+$JAN preset apply exec-only "$ROOT/secretdir" > /dev/null 2>&1
 EO=$(stat -c '%a' "$ROOT/secretdir")
 if [[ "$EO" == "711" ]]; then pass "preset exec-only=711"; else fail "exec-only → $EO"; fi
 rm -rf "$ROOT/secretdir"
@@ -785,7 +803,7 @@ mkdir -p "$ROOT/hist"
 echo a > "$ROOT/hist/f"
 $JAN chmod 640 "$ROOT/hist/f" > /dev/null
 $JAN chmod 600 "$ROOT/hist/f" > /dev/null
-HO=$($JAN history "$ROOT/hist/f" 2>&1)
+HO=$(tty_run "$JAN history $ROOT/hist/f")
 assert_grep "history lists backups" "$HO" "$ROOT/hist/f"
 HJ=$($JAN -j history "$ROOT/hist/f" 2>&1)
 assert_grep "history --json array" "$HJ" "\["
@@ -832,13 +850,13 @@ rm -rf "$ROOT/cp" "$ROOT/cpR"
 # ── 56. new presets (7) ─────────────────────────────────────────────
 touch "$ROOT/p_sshkey" "$ROOT/p_config" "$ROOT/p_log" "$ROOT/p_unit" "$ROOT/p_ro" "$ROOT/p_no"
 mkdir -p "$ROOT/p_sshdir"
-$JAN preset ssh-key      "$ROOT/p_sshkey" > /dev/null
-$JAN preset ssh-dir      "$ROOT/p_sshdir" > /dev/null
-$JAN preset config       "$ROOT/p_config" > /dev/null
-$JAN preset log-file     "$ROOT/p_log"    > /dev/null
-$JAN preset systemd-unit "$ROOT/p_unit"   > /dev/null
-$JAN preset read-only    "$ROOT/p_ro"     > /dev/null
-$JAN preset no-access    "$ROOT/p_no"     > /dev/null
+$JAN preset apply ssh-key      "$ROOT/p_sshkey" > /dev/null
+$JAN preset apply ssh-dir      "$ROOT/p_sshdir" > /dev/null
+$JAN preset apply config       "$ROOT/p_config" > /dev/null
+$JAN preset apply log-file     "$ROOT/p_log"    > /dev/null
+$JAN preset apply systemd-unit "$ROOT/p_unit"   > /dev/null
+$JAN preset apply read-only    "$ROOT/p_ro"     > /dev/null
+$JAN preset apply no-access    "$ROOT/p_no"     > /dev/null
 for pair in "p_sshkey:600" "p_sshdir:700" "p_config:640" "p_log:640" \
             "p_unit:644" "p_ro:444" "p_no:0"; do
     f=${pair%%:*}; want=${pair##*:}
@@ -882,16 +900,11 @@ if [[ "$skip" == "700" && "$keep" == "644" ]]; then pass "chmod --exclude glob";
 
 rm -rf "$ROOT/v"
 
-# ── 59. find + print0 pipe into chmod ──────────────────────────────
+# ── 59. (removed — the `find` subcommand was dropped upstream; the
+# audit block below still reuses this scratch tree) ─────────────────
 mkdir -p "$ROOT/f"
 touch "$ROOT/f/x"; chmod 0777 "$ROOT/f/x"
 touch "$ROOT/f/y"; chmod 0644 "$ROOT/f/y"
-FO=$($JAN find "$ROOT/f" -m 0777 2>&1)
-assert_grep "find by mode lists x" "$FO" "/f/x"
-refute_grep "find by mode excludes y" "$FO" "/f/y$"
-$JAN find "$ROOT/f" -m 0777 -0 | $JAN chmod 0750 --stdin0 > /dev/null 2>&1 || true
-xm=$(stat -c '%a' "$ROOT/f/x")
-if [[ "$xm" == "750" ]]; then pass "find -0 | chmod --stdin0"; else fail "pipe chain got $xm"; fi
 
 # ── 60. audit --fix strip-world-write ──────────────────────────────
 chmod 0666 "$ROOT/f/x"
@@ -975,7 +988,7 @@ rm -rf "$ROOT/ba"
 # ── 66. history --since ───────────────────────────────────────────
 touch "$ROOT/h"; chmod 0644 "$ROOT/h"
 $JAN chmod 0600 "$ROOT/h" > /dev/null
-HO=$($JAN history "$ROOT/h" --since 1h 2>&1)
+HO=$(tty_run "$JAN history $ROOT/h --since 1h")
 assert_grep "history --since 1h lists it"    "$HO" "chmod"
 HO2=$($JAN history "$ROOT/h" -s 1s 2>&1 || true)
 rm -f "$ROOT/h"
@@ -989,7 +1002,7 @@ rm -f "$ROOT/at"
 
 # ── 68. preset variadic ───────────────────────────────────────────
 touch "$ROOT/p1" "$ROOT/p2"
-$JAN preset config "$ROOT/p1" "$ROOT/p2" > /dev/null
+$JAN preset apply config "$ROOT/p1" "$ROOT/p2" > /dev/null
 m1=$(stat -c '%a' "$ROOT/p1"); m2=$(stat -c '%a' "$ROOT/p2")
 if [[ "$m1" == "640" && "$m2" == "640" ]]; then pass "preset variadic"; else fail "preset variadic got m1=$m1 m2=$m2"; fi
 rm -f "$ROOT/p1" "$ROOT/p2"
@@ -1010,7 +1023,7 @@ N_BID=$(echo "$BO" | grep -c "^backup:")
 if [[ "$N_BID" == "1" ]]; then pass "batch creates exactly 1 backup for 3 ops"; else fail "batch made $N_BID backups"; fi
 m1=$(stat -c '%a' "$ROOT/bt/a"); m2=$(stat -c '%a' "$ROOT/bt/b"); m3=$(stat -c '%a' "$ROOT/bt/c")
 if [[ "$m1$m2$m3" == "755755755" ]]; then pass "batch applied all 3 ops"; else fail "batch mode=$m1/$m2/$m3"; fi
-$JAN undo > /dev/null
+$JAN undo --yes > /dev/null
 m1=$(stat -c '%a' "$ROOT/bt/a"); m2=$(stat -c '%a' "$ROOT/bt/b"); m3=$(stat -c '%a' "$ROOT/bt/c")
 if [[ "$m1$m2$m3" == "600600600" ]]; then pass "single undo reverts every batch op"; else fail "batch undo mode=$m1/$m2/$m3"; fi
 rm -rf "$ROOT/bt"
@@ -1046,7 +1059,7 @@ N_BID=$(echo "$PO" | grep -c "^backup:")
 if [[ "$N_BID" == "1" ]]; then pass "policy creates exactly 1 backup for 2 rules"; else fail "policy made $N_BID backups"; fi
 m1=$(stat -c '%a' "$ROOT/pt/a"); m2=$(stat -c '%a' "$ROOT/pt/b")
 if [[ "$m1" == "755" && "$m2" == "755" ]]; then pass "policy applied both rules"; else fail "policy mode=$m1/$m2"; fi
-$JAN undo > /dev/null
+$JAN undo --yes > /dev/null
 m1=$(stat -c '%a' "$ROOT/pt/a"); m2=$(stat -c '%a' "$ROOT/pt/b")
 if [[ "$m1" == "600" && "$m2" == "600" ]]; then pass "single undo reverts whole policy"; else fail "policy undo mode=$m1/$m2"; fi
 rm -rf "$ROOT/pt"

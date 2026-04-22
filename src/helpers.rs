@@ -151,7 +151,11 @@ pub fn default_group_name(target: &Path) -> String {
     } else {
         slug
     };
-    let slug = if slug.is_empty() { "root".to_string() } else { slug };
+    let slug = if slug.is_empty() {
+        "root".to_string()
+    } else {
+        slug
+    };
     format!("pm_{slug}_{hash8}")
 }
 
@@ -176,28 +180,28 @@ fn fnv1a_hex8(bytes: &[u8]) -> String {
 // (via libc::__fsword_t) but the constants are the same regardless of
 // platform word size.
 const PSEUDO_FS_MAGIC: &[i64] = &[
-    0x9fa0,       // PROC_SUPER_MAGIC        /proc
-    0x62656572,   // SYSFS_MAGIC             /sys
-    0x01021994,   // TMPFS_MAGIC             /tmp, /run, /dev/shm, /dev (devtmpfs)
-    0x1cd1,       // DEVPTS_SUPER_MAGIC      /dev/pts
-    0x27e0eb,     // CGROUP_SUPER_MAGIC
-    0x63677270,   // CGROUP2_SUPER_MAGIC
-    0x19800202,   // MQUEUE_MAGIC
-    0x64626720,   // DEBUGFS_MAGIC
-    0x74726163,   // TRACEFS_MAGIC
-    0x62656570,   // CONFIGFS_MAGIC
+    0x9fa0,               // PROC_SUPER_MAGIC        /proc
+    0x62656572,           // SYSFS_MAGIC             /sys
+    0x01021994,           // TMPFS_MAGIC             /tmp, /run, /dev/shm, /dev (devtmpfs)
+    0x1cd1,               // DEVPTS_SUPER_MAGIC      /dev/pts
+    0x27e0eb,             // CGROUP_SUPER_MAGIC
+    0x63677270,           // CGROUP2_SUPER_MAGIC
+    0x19800202,           // MQUEUE_MAGIC
+    0x64626720,           // DEBUGFS_MAGIC
+    0x74726163,           // TRACEFS_MAGIC
+    0x62656570,           // CONFIGFS_MAGIC
     0x858458f6u32 as i64, // RAMFS_MAGIC
     0x958458f6u32 as i64, // HUGETLBFS_MAGIC
-    0x6165676C,   // PSTOREFS_MAGIC
+    0x6165676C,           // PSTOREFS_MAGIC
     0xcafe4a11u32 as i64, // BPF_FS_MAGIC
-    0x65735543,   // FUSECTL_SUPER_MAGIC
-    0x42494e4d,   // BINFMTFS_MAGIC
-    0x67596969,   // RPC_PIPEFS_SUPER_MAGIC
-    0x6e667364,   // NFSD_MAGIC
-    0x0187,       // AUTOFS_SUPER_MAGIC
-    0x73636673,   // SECURITYFS_MAGIC
+    0x65735543,           // FUSECTL_SUPER_MAGIC
+    0x42494e4d,           // BINFMTFS_MAGIC
+    0x67596969,           // RPC_PIPEFS_SUPER_MAGIC
+    0x6e667364,           // NFSD_MAGIC
+    0x0187,               // AUTOFS_SUPER_MAGIC
+    0x73636673,           // SECURITYFS_MAGIC
     0xf97cff8cu32 as i64, // SELINUX_MAGIC
-    0x6e736673,   // NSFS_MAGIC
+    0x6e736673,           // NSFS_MAGIC
 ];
 
 /// Return true if `path` resides on a kernel-managed pseudo-filesystem
@@ -312,9 +316,7 @@ mod tests {
         let a = default_group_name(Path::new(
             "/srv/acme/engineering/src/backend/auth/session/jwt.secret",
         ));
-        let b = default_group_name(Path::new(
-            "/srv/acme/engineering/src/backend/db/schema.sql",
-        ));
+        let b = default_group_name(Path::new("/srv/acme/engineering/src/backend/db/schema.sql"));
         assert_ne!(a, b, "collision regression: {a} == {b}");
     }
 

@@ -7,7 +7,7 @@
 //! transaction with one snapshot, and auto-propagates the traversal bit
 //! through the parent chain.
 
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use crate::acl::{acl_modify, supports_acl};
@@ -116,10 +116,12 @@ fn parse_allow(spec: &str, target: &str, kind: char) -> Result<Pinhole> {
 /// Ancestors of `file`, up to and including `base`, in root-to-leaf order.
 /// Returns an error if `file` does not live under `base`.
 fn chain_from_base(base: &Path, file: &Path) -> Result<Vec<PathBuf>> {
-    let rel = file.strip_prefix(base).map_err(|_| PmError::SealAllowOutsideBase {
-        allow: file.to_path_buf(),
-        base: base.to_path_buf(),
-    })?;
+    let rel = file
+        .strip_prefix(base)
+        .map_err(|_| PmError::SealAllowOutsideBase {
+            allow: file.to_path_buf(),
+            base: base.to_path_buf(),
+        })?;
     let mut out = vec![base.to_path_buf()];
     let mut cur = base.to_path_buf();
     for comp in rel.components() {
@@ -215,7 +217,15 @@ pub fn cmd_seal(
     }
 
     if dry_run {
-        print_card(&base_path, &spec, recursive, baseline_paths.len(), &pinholes, None, true);
+        print_card(
+            &base_path,
+            &spec,
+            recursive,
+            baseline_paths.len(),
+            &pinholes,
+            None,
+            true,
+        );
         return Ok(());
     }
 
@@ -228,7 +238,7 @@ pub fn cmd_seal(
         for p in &pinholes {
             snap_set.push(p.path.clone());
         }
-        let snap = snapshot_with_acl(&snap_set, true);
+        let snap = snapshot_with_acl(&snap_set, !pinholes.is_empty());
 
         let bid = save_backup(
             snap,
@@ -302,7 +312,8 @@ fn apply_baseline(paths: &[PathBuf], spec: &BaseSpec) -> Result<()> {
     for p in paths {
         // chown first. Uid/Gid options: None means "unchanged".
         if uid.is_some() || gid.is_some() {
-            chown(p, uid, gid).map_err(|e| PmError::Other(format!("chown {}: {e}", p.display())))?;
+            chown(p, uid, gid)
+                .map_err(|e| PmError::Other(format!("chown {}: {e}", p.display())))?;
         }
         // chmod: mask special bits for non-dir if they weren't in the
         // spec (keep behavior deterministic).
@@ -382,7 +393,11 @@ fn print_card(
         paint(Style::Primary, &format!("{:04o}", spec.mode))
     );
     let word = if entry_count == 1 { "entry" } else { "entries" };
-    let scope_note = if recursive { "recursive" } else { "top-level only" };
+    let scope_note = if recursive {
+        "recursive"
+    } else {
+        "top-level only"
+    };
     println!(
         "  {}  {} {}  ({})",
         paint(Style::Label, "scope    "),
@@ -397,11 +412,7 @@ fn print_card(
             paint(Style::Separator, "(none)")
         );
     } else {
-        println!(
-            "  {}  {}",
-            paint(Style::Label, "pinholes "),
-            pinholes.len()
-        );
+        println!("  {}  {}", paint(Style::Label, "pinholes "), pinholes.len());
         for p in pinholes {
             let principal = if p.kind == 'u' {
                 paint(Style::User, &p.name)

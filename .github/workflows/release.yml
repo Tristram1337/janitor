@@ -62,6 +62,26 @@ jobs:
         if: matrix.use_cross
         run: cargo install cross --locked --version 0.2.5
 
+      # Build a host-native (amd64) janitor first. We need a runnable
+      # binary on the runner to invoke `janitor completions` /
+      # `janitor man` and generate packaging assets into target/assets/.
+      # The cross-compiled arm64 binary we produce in the next step
+      # isn't executable here. For amd64 jobs this build is wasted work
+      # (the target-specific step rebuilds the same thing), but it's
+      # cheap relative to the release tarball upload and keeps the
+      # workflow symmetric across targets.
+      - name: Build host-native binary (for packaging assets)
+        run: cargo build --release
+
+      - name: Generate packaging assets (completions + man page)
+        run: |
+          set -euo pipefail
+          mkdir -p target/assets/completions target/assets/man
+          ./target/release/janitor completions bash > target/assets/completions/janitor
+          ./target/release/janitor completions zsh  > target/assets/completions/_janitor
+          ./target/release/janitor completions fish > target/assets/completions/janitor.fish
+          ./target/release/janitor man              > target/assets/man/janitor.1
+
       - name: Build (cargo)
         if: ${{ !matrix.use_cross }}
         run: cargo build --release --target ${{ matrix.target }}
@@ -84,7 +104,7 @@ jobs:
           mkdir -p "dist/$DIST"
           cp "target/${{ matrix.target }}/release/janitor" "dist/$DIST/"
           cp README.md LICENSE CHANGELOG.md "dist/$DIST/"
-          cp docs/janitor.1 "dist/$DIST/"
+          cp target/assets/man/janitor.1 "dist/$DIST/"
           tar -C dist -czf "dist/$DIST.tar.gz" "$DIST"
           ( cd dist && sha256sum "$DIST.tar.gz" > "$DIST.tar.gz.sha256" )
 
