@@ -64,7 +64,48 @@ fix(acl): preserve mask when restoring default ACL
 docs: clarify managed-group naming scheme
 ```
 
-## Reporting bugs
+## Branch hygiene: `main` vs `dev`
+
+The project uses a simple two-branch flow. Follow these rules to keep
+`dev → main` merges boring:
+
+1. **`main` only accepts merges from `dev`** — never commit or cherry-pick
+   fixes directly onto `main`. Any hotfix that needs to ship must first
+   land on `dev`, get tested there, then flow to `main` via merge.
+2. **Before merging `dev → main`, rebase `dev` on top of `main`.** If `main`
+   has moved forward (e.g. a prior hotfix merge), running
+   `git fetch && git rebase origin/main` on `dev` makes the merge a
+   fast-forward and eliminates conflict resolution that silently drops
+   changes. If you cannot rebase (shared `dev`), at minimum merge `main`
+   back into `dev` first and resolve conflicts on `dev` where tests run.
+3. **Never amend a merge commit.** If conflict resolution went wrong,
+   revert the merge and redo it cleanly. Amending hides the real state
+   behind a timestamp skew (commit-date drifting from author-date) and
+   the result on `main` can end up containing code that was never on
+   `dev` and therefore never tested there.
+4. **Run the full test suite on the merge commit, not just on `dev`.**
+   Even a clean auto-merge can combine unrelated changes in a way
+   neither branch exercised. `cargo test --release && docker run ...` on
+   the resulting merge commit is the only ground truth.
+5. **Protect `main`.** CI must pass on the merge commit before it is
+   pushed. Any CI failure on `main` after a merge is a workflow bug,
+   not just a code bug — fix it by adjusting the merge, not by piling
+   another commit on top.
+
+### Post-mortem: why did `v0.1.1` break on `main` despite passing on `dev`?
+
+`main` had diverged before the merge: it carried several commits
+(`audit sweep`, `seal`, `scan skip pseudo-fs`, …) that never landed on
+`dev`. When the `dev → main` merge was made, files touched by both
+sides (notably `src/tree.rs`, `src/whocan.rs`, `src/render.rs`,
+`src/presets.rs`) required hand resolution. The merge commit was then
+amended an hour after it was authored, so the tree on `main` differs
+from `dev`'s tip in 19 files — code that was never compiled or tested
+together shipped under the release tag. The fix for next time is rule
+2 above (rebase `dev` first) combined with rule 4 (test the merge
+commit itself).
+
+
 
 Please include:
 

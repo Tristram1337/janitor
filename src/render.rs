@@ -677,7 +677,12 @@ pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
     let mut out = String::new();
     // Header
     for (i, h) in header.iter().enumerate() {
-        let padded = pad_right(&paint(Style::Label, h), widths[i]);
+        let painted = paint(Style::Label, h);
+        let padded = if i + 1 < cols {
+            pad_right(&painted, widths[i])
+        } else {
+            painted
+        };
         out.push_str(&padded);
         if i + 1 < cols {
             out.push_str("  ");

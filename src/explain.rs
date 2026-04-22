@@ -97,14 +97,34 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
         .max(20);
     let path_w = max_path_w.min(55);
 
+    // Pre-compute owner strings so we can right-pad the owner column to
+    // a uniform width; without this the `traverse ok / no traverse`
+    // column drifts whenever `owner:group` widths differ between rows.
+    let mut owner_visible_w: usize = 0;
+    let owner_raw: Vec<String> = chain
+        .iter()
+        .map(|p| match fs::symlink_metadata(p) {
+            Ok(md) => format!(
+                "{}:{}",
+                uid_to_name(Uid::from_raw(md.uid())),
+                gid_to_name(Gid::from_raw(md.gid()))
+            ),
+            Err(_) => String::new(),
+        })
+        .collect();
+    for s in &owner_raw {
+        owner_visible_w = owner_visible_w.max(s.chars().count());
+    }
+
     // Render each step.
     for (i, p) in chain.iter().enumerate() {
         let md = match fs::symlink_metadata(p) {
             Ok(m) => m,
             Err(e) => {
                 println!(
-                    "  {}  {:<path_w$}  {}",
+                    "  {}  {} {:<path_w$}  {}",
                     paint(Style::Danger, glyphs().cross),
+                    paint(Style::Separator, " "),
                     p.display().to_string(),
                     paint(Style::Danger, &format!("<{e}>")),
                     path_w = path_w
@@ -121,6 +141,7 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
             paint(Style::Separator, ":"),
             paint(Style::Group, &gid_to_name(Gid::from_raw(md.gid())))
         );
+        let owner_pad = owner_visible_w.saturating_sub(owner_raw[i].chars().count());
         let acl_hint = if has_extended_acl(p) {
             format!(" {}", paint(Style::AclMarker, "+acl"))
         } else {
@@ -128,12 +149,19 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
         };
 
         let is_target = *p == target;
+        // ── Marker column (2 cols): status indicator for each step ──
+        // ✗ = blocker, → = target reached, · = traverse hop that passed.
         let marker = if Some(i) == blocker_idx {
             paint(Style::Danger, glyphs().cross)
         } else if is_target && blocker_idx.is_none() {
             paint(Style::Ok, glyphs().arrow_right)
+        } else if is_target {
+            // Target but unreachable (blocker earlier in chain).
+            paint(Style::Deny, glyphs().cross)
         } else {
-            " ".to_string()
+            // Successful traverse hop — show a midot to visualize the
+            // descent chain (these are the "traverse dots").
+            paint(Style::Ok, glyphs().midot)
         };
 
         let rhs = if is_target {
@@ -193,7 +221,8 @@ pub fn cmd_explain(path: &str, for_user: Option<&str>) -> Result<()> {
         let path_visual = format!("{}{}", path_disp, acl_hint);
         // Left-align path column with manual padding over visible width.
         let pad = path_w.saturating_sub(path_disp.chars().count());
-        let sym_owner = format!("{sym}  {owner}");
+        let owner_padded = format!("{owner}{}", " ".repeat(owner_pad));
+        let sym_owner = format!("{sym}  {owner_padded}");
         println!(
             "  {}  {}{}  {}  {}  {}",
             marker,

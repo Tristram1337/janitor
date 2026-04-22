@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- `explain`: ancestor-chain table now aligns its `traverse ok`, `via …`
+  and verdict columns across all rows regardless of `owner:group`
+  width. Each traversed ancestor also carries a `·` glyph in the
+  marker column so the descent chain is visible at a glance (target
+  keeps `→` on success, `✗` on the first blocking step).
+- `who-can`: header card (`owner`/`mode` and `group`/`acl`) now uses
+  the same dynamic-width kv-grid as `info`, so the right column stays
+  put even for long managed group names (e.g. `pm_demo-janitor_hr_…`).
+- `tree`: mode/owner column no longer drifts by one space under
+  last-child subtrees (`└─` branch). The prefix stride is now a
+  consistent 3 columns across `│  ` vert and last-child indent.
+- `aligned_table` (audit, history, preset-list): header row no longer
+  pads the trailing column, removing stray trailing whitespace.
 - `info`: two-column grid now aligns the right column dynamically from
   the widest left cell, so `mode` / `size` / `mtime` stack at the same
   screen column even when user/group names expand (orphan UIDs like
