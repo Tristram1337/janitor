@@ -197,6 +197,14 @@ fn evaluate_acl(
         if line.is_empty() || line.starts_with('#') {
             continue;
         }
+        // `default:*` entries apply only to newly-created children of a
+        // directory, never to access checks on the entry itself. They
+        // must be skipped rather than parsed — otherwise a malformed
+        // line like `default:user:bob:rwx` (3-colon form) would short
+        // out parse_perm_bits and abort evaluation for the whole block.
+        if line.starts_with("default:") {
+            continue;
+        }
         let parts: Vec<&str> = line.splitn(3, ':').collect();
         if parts.len() != 3 {
             continue;
@@ -408,5 +416,91 @@ other::r--
         let d = evaluate_acl(text, 9999, &gids, 1006, "nobody").unwrap();
         assert!(d.read);
         assert!(!d.write);
+    }
+
+    // ── Extra edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn acl_named_user_zero_mask_denies() {
+        // Named user with rwx but mask=0 → no effective access.
+        let text = "\
+user::rw-
+user:bob:rwx
+group::---
+mask::---
+other::---
+";
+        let gids = HashSet::new();
+        let d = evaluate_acl(text, 1003, &gids, 1006, "bob").unwrap();
+        assert!(!d.read && !d.write && !d.exec, "mask 0 denies named user");
+    }
+
+    #[test]
+    fn acl_other_entry_ignores_mask() {
+        // The `other::` entry is NOT constrained by mask (POSIX).
+        let text = "\
+user::---
+group::---
+mask::---
+other::r--
+";
+        let gids = HashSet::new();
+        let d = evaluate_acl(text, 9999, &gids, 1006, "stranger").unwrap();
+        assert!(d.read, "other bits are outside mask");
+    }
+
+    #[test]
+    fn acl_trailing_effective_comment_parsed() {
+        // Real `getfacl` output often includes `#effective:` comments.
+        let text = "\
+user::rw-
+user:bob:rwx\t\t#effective:r--
+mask::r--
+other::---
+";
+        let gids = HashSet::new();
+        let d = evaluate_acl(text, 1003, &gids, 1006, "bob").unwrap();
+        assert!(d.read);
+        assert!(!d.write && !d.exec, "effective comment is metadata only");
+    }
+
+    #[test]
+    fn acl_blank_and_comment_lines_ignored() {
+        let text = "\
+# file: /srv/x
+# owner: alice
+
+user::rw-
+user:bob:r--
+group::---
+mask::r--
+other::---
+";
+        let gids = HashSet::new();
+        let d = evaluate_acl(text, 1003, &gids, 1006, "bob").unwrap();
+        assert!(d.read);
+    }
+
+    #[test]
+    fn acl_default_entries_do_not_grant() {
+        // `default:` entries apply to children of directories, not to
+        // access checks on the entry itself. They must not grant access
+        // to a user who has no access-ACL entry.
+        let text = "\
+user::rw-
+group::---
+mask::---
+other::---
+default:user:bob:rwx
+default:group::rwx
+default:mask::rwx
+default:other::rwx
+";
+        let gids = HashSet::new();
+        let d = evaluate_acl(text, 1003, &gids, 1006, "bob").unwrap();
+        assert!(
+            !d.read && !d.write && !d.exec,
+            "default-ACL must not grant access on the entry itself"
+        );
     }
 }

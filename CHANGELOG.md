@@ -5,6 +5,95 @@ All notable changes to `janitor` are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.1.2] - 2026-04-23
+
+UX polish pass driven by `tmp/demo.sh` review: tighter alignment, more
+honest piped output, sysadmin-flavoured glyphs, and a small ACL-parser
+correctness fix.
+
+### Fixed
+- `access::evaluate_acl` aborted on the first `default:*` line because
+  `getfacl`'s 4-colon default form broke `parse_perm_bits` via
+  `splitn(3, ':')`, making the whole block return `None`. Real
+  `getfacl` output on directories routinely mixes access and default
+  entries, so `who-can` / `explain` could silently drop ACL data.
+  Default entries are now skipped before parsing; regression-tested.
+- `chmod` / `chown`: the per-path `before → after` diff line was gated
+  on `stderr` being a tty, which hid it whenever output was piped to
+  `tee` / `logger`. Moved to stdout so captured audit trails keep the
+  "what changed" detail (colour still auto-disables for non-tty).
+- `aligned_table` (audit, history, preset-list): each row now has
+  trailing whitespace stripped, so rows with a usually-empty final
+  column (e.g. `flags` in `audit`) no longer ship a halo of spaces.
+- `explain`: ancestor-chain table now aligns its `traverse ok`, `via …`
+  and verdict columns across all rows regardless of `owner:group`
+  width. The descent is also rendered as an indented tree (basenames
+  with `└─` connectors per level) so it reads unmistakably as a
+  filesystem traversal.
+- `who-can`: header card (`owner`/`mode` and `group`/`acl`) now uses
+  the same dynamic-width kv-grid as `info`, so the right column stays
+  put even for long managed group names.
+- `tree`: mode/owner column no longer drifts by one space under
+  last-child subtrees (`└─` branch). The prefix stride is now a
+  consistent 3 columns across `│  ` vert and last-child indent.
+- `info`: two-column grid now aligns the right column dynamically from
+  the widest left cell, so `mode` / `size` / `mtime` stack at the same
+  screen column even when user/group names expand.
+- `seal`, `compare`, `who-can`: hard-coded `⚠` / `✓` / `·` replaced
+  with `render::glyphs()` lookups so `NO_COLOR=1` / non-UTF-8 locales
+  actually get the ASCII fallback.
+
+### Changed
+- **Glyphs:** `info` and `warn` markers switched to sysadmin-style
+  `::` and `!!` (pacman / makepkg / syslog convention) in the demo
+  banner helpers and in `who-can`'s blocked-traversal notice. Same
+  tokens in both Unicode and ASCII sets — no translation surprise
+  when `LANG=C`.
+- **`explain` status marker:** `✗` → `●` for blockers (systemd
+  `list-units` convention, single-column in both Unicode and ASCII
+  so marker-column alignment holds). `→` still marks the reachable
+  target.
+- **`audit`:** `mode` cell is now painted yellow (`Highlight`) on
+  rows that matched `--world-readable` / `--world-executable`, so
+  the filter-match reason is visible per row. World-writable and
+  suid/sgid/sticky still render red (`WarnMajor`) as before.
+- **`seal`:** when the base is a directory with children and `-R`
+  was not passed, the card now prints a `hint:` line:
+  `only the directory itself was sealed — pass -R to include its
+  contents`. The hint fires only when it's actionable (non-empty
+  directory + non-recursive); single-file seals and empty
+  directories stay quiet.
+- **`render::Glyphs`:** added `info` (`::`) and `fail` (`●` / `X`).
+  `fail` is a 1-column failure marker, intentionally distinct from
+  `cross` (`✗` / `[X]`) so ASCII-mode marker columns stay aligned.
+- Shell completions no longer list short-form flags (`-n`, `-j`, `-q`,
+  `-h`, `-V`) or subcommand aliases (`g`, `rv`, `t`, `b`, `r`, `u`, `h`,
+  `cp`, `ls`, `prune`, `i`, `a`, `w`, `p`, `e`, and the `-R` short alias
+  on `compare --recursive`). The short forms remain fully functional on
+  the CLI and are still documented in `--help` and in `janitor(1)`;
+  they just don't clutter `janitor <TAB><TAB>` anymore. Implemented as a
+  completion-only view of the command tree, so the parser is untouched.
+- Dropped the unused `tabled` dependency (dead `simple_table` helper
+  removed; all tables now go through the ANSI-aware `aligned_table`).
+
+### Testing
+- Test count 36 → 59 (+23). New coverage:
+  - `chperm::apply_symbolic` (18): add/remove/`=` per `u`/`g`/`o`/`a`
+    class, empty who = all, multi-who (`ug+x`, `go-rwx`), comma
+    chains (`u=rwx,go=rx`), whitespace-around-parts, `X`-capital
+    semantics on dirs vs. files (with/without existing exec bit),
+    suid/sgid/sticky add & remove, `=` clears specials for the
+    matched who, high-bit truncation (stray file-type bits masked),
+    idempotency, preservation of `sgid` across unrelated `+r`,
+    rejection of bad who / bad perm / missing op.
+  - `access::evaluate_acl` (5): zero mask denies named user,
+    `other::` bypasses mask, trailing `#effective:` comment parsed,
+    blank / `#`-comment lines ignored, `default:*` entries never
+    grant access (regression test for the parser fix).
+
+
 ## [0.1.1] - 2026-04-22
 
 Pre-1.0 polishing pass: UX triage, packaging, and correctness fixes. **Breaking

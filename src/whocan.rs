@@ -17,7 +17,7 @@ use crate::access::effective_for_user_path;
 use crate::acl::has_extended_acl;
 use crate::errors::Result;
 use crate::helpers::{path_chain, resolve_path};
-use crate::render::{self, glyphs, paint, Style};
+use crate::render::{self, glyphs, kv_grid, paint, KvRow, Style};
 use crate::users::{gid_to_name, uid_to_name};
 
 #[derive(Debug, Serialize)]
@@ -127,22 +127,31 @@ pub fn cmd_who_can(path: &str, as_json: bool) -> Result<()> {
     } else {
         paint(Style::Label, "none")
     };
-    println!(
-        "  {}  {} {}      {}  {}",
-        paint(Style::Label, "owner"),
+    let owner_cell = format!(
+        "{} {}",
         paint(Style::User, &owner_name),
         paint(Style::Label, &format!("(uid {uid})")),
-        paint(Style::Label, "mode"),
-        mode_str
     );
-    println!(
-        "  {}  {} {}    {}   {}",
-        paint(Style::Label, "group"),
+    let group_cell = format!(
+        "{} {}",
         paint(Style::Group, &group_name),
         paint(Style::Label, &format!("(gid {gid})")),
-        paint(Style::Label, "acl "),
-        acl_txt
     );
+    let key_w = "group".len();
+    let rows: Vec<KvRow<'_>> = vec![
+        (
+            ("owner", owner_cell.as_str()),
+            Some(("mode", mode_str.as_str())),
+        ),
+        (
+            ("group", group_cell.as_str()),
+            Some(("acl", acl_txt.as_str())),
+        ),
+    ];
+    let grid = kv_grid(&rows, key_w, 2);
+    for line in grid.lines() {
+        println!("  {}", line);
+    }
 
     if mode & 0o004 != 0 {
         println!();
@@ -169,7 +178,10 @@ pub fn cmd_who_can(path: &str, as_json: bool) -> Result<()> {
             "     {}",
             paint(
                 Style::Label,
-                "users below with no traverse are marked with ⚠"
+                &format!(
+                    "users below with no traverse are marked with {}",
+                    glyphs().warn
+                )
             )
         );
     }

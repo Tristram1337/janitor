@@ -19,9 +19,6 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use owo_colors::OwoColorize;
-use tabled::builder::Builder as TableBuilder;
-use tabled::settings::object::Columns;
-use tabled::settings::{Alignment, Modify, Padding, Style as TableStyle};
 
 use crate::cli::ColorMode;
 
@@ -150,9 +147,15 @@ pub struct Glyphs {
     pub header_marker: &'static str, // `▸` or `>`
     pub bullet_filled: &'static str, // `●` or `[x]`
     pub bullet_empty: &'static str,  // `○` or `[ ]`
-    pub warn: &'static str,          // `⚠` or `[!]`
+    pub info: &'static str,          // `::` (pacman-style note)
+    pub warn: &'static str,          // `!!` (syslog/pacman-style)
     pub check: &'static str,         // `✓` or `[ok]`
     pub cross: &'static str,         // `✗` or `[X]`
+    /// Single-column failure marker (systemd-style red bullet) — used
+    /// in fixed-width marker columns where `cross`'s `[X]` ASCII form
+    /// would misalign. Distinct from `bullet_filled` because its ASCII
+    /// fallback is intentionally `X` (1 col), not `[x]` (3 cols).
+    pub fail: &'static str, // `●` or `X`
     pub arrow_right: &'static str,   // `→` or `->`
     pub midot: &'static str,         // `·` or `-`
     pub rule_char: &'static str,     // `─` or `-`
@@ -165,9 +168,11 @@ const GLYPHS_UNICODE: Glyphs = Glyphs {
     header_marker: "▸",
     bullet_filled: "●",
     bullet_empty: "○",
-    warn: "⚠",
+    info: "::",
+    warn: "!!",
     check: "✓",
     cross: "✗",
+    fail: "●",
     arrow_right: "→",
     midot: "·",
     rule_char: "─",
@@ -180,8 +185,10 @@ const GLYPHS_ASCII: Glyphs = Glyphs {
     header_marker: ">",
     bullet_filled: "[x]",
     bullet_empty: "[ ]",
-    warn: "[!]",
+    info: "::",
+    warn: "!!",
     check: "[ok]",
+    fail: "X",
     cross: "[X]",
     arrow_right: "->",
     midot: "-",
@@ -254,32 +261,53 @@ pub fn kv(key: &str, value: &str, key_width: usize) -> String {
     )
 }
 
-/// Two side-by-side kv pairs on the same line, each column `col_width` wide
-/// from the start of the key to the end of the value. Useful for card
-/// layouts: `owner  alice  (uid 1001)   mode   0640 · -rw-r-----`.
-pub fn kv_pair(
-    left: (&str, &str),
-    right: (&str, &str),
-    key_width: usize,
-    col_width: usize,
-) -> String {
-    let left_raw = format!(
-        "{}{}{}",
-        left.0,
-        " ".repeat(key_width.saturating_sub(left.0.chars().count()) + 1),
-        strip_ansi_width_str(left.1)
-    );
-    let visual_len = visible_width(&left_raw);
-    let pad = col_width.saturating_sub(visual_len).max(2);
-    let mut s = String::new();
-    s.push_str(&paint(Style::Label, left.0));
-    s.push_str(&" ".repeat(key_width.saturating_sub(left.0.chars().count()) + 1));
-    s.push_str(left.1);
-    s.push_str(&" ".repeat(pad));
-    s.push_str(&paint(Style::Label, right.0));
-    s.push_str(&" ".repeat(key_width.saturating_sub(right.0.chars().count()) + 1));
-    s.push_str(right.1);
-    s
+/// A single row for [`kv_grid`]: a `(key, value)` left cell plus an
+/// optional `(key, value)` right cell.
+pub type KvRow<'a> = ((&'a str, &'a str), Option<(&'a str, &'a str)>);
+
+/// Render a two-column key/value grid where the left-column width is
+/// computed dynamically from the widest left cell across all rows, so
+/// the right column starts at the same screen position on every line
+/// (even when values have varying visible widths or contain ANSI
+/// escapes). A `None` right cell renders only the left cell padded to
+/// its width — handy for trailing "full-width" rows that must still
+/// align under the right column above.
+///
+/// `key_width` is the padding between each key and its value. Columns
+/// are separated by `gutter` spaces. Every produced line is terminated
+/// by `\n`. Left cells are expected to be raw (unpainted) keys + caller-
+/// painted values; the key is painted here via `Style::Label`.
+pub fn kv_grid(rows: &[KvRow<'_>], key_width: usize, gutter: usize) -> String {
+    // Pre-render each left cell so we can measure its visible width.
+    let lefts: Vec<String> = rows
+        .iter()
+        .map(|((k, v), _)| {
+            let key_pad = key_width.saturating_sub(k.chars().count()) + 1;
+            format!("{}{}{}", paint(Style::Label, k), " ".repeat(key_pad), v)
+        })
+        .collect();
+    let left_w = lefts.iter().map(|s| visible_width(s)).max().unwrap_or(0);
+
+    let mut out = String::new();
+    for (i, ((_, _), right)) in rows.iter().enumerate() {
+        let left = &lefts[i];
+        out.push_str(left);
+        match right {
+            Some((k, v)) => {
+                let pad = left_w.saturating_sub(visible_width(left)) + gutter;
+                out.push_str(&" ".repeat(pad));
+                let key_pad = key_width.saturating_sub(k.chars().count()) + 1;
+                out.push_str(&paint(Style::Label, k));
+                out.push_str(&" ".repeat(key_pad));
+                out.push_str(v);
+            }
+            None => {
+                // Left-only row: no trailing padding needed.
+            }
+        }
+        out.push('\n');
+    }
+    out
 }
 
 /// Return a visual width estimate for a string that may contain ANSI
@@ -642,8 +670,9 @@ pub fn pad_right(cell: &str, width: usize) -> String {
 
 /// Render a fixed-column table where the caller has pre-painted cells.
 /// Column widths are computed from the visible width of the header + all
-/// cells. Unlike `simple_table`, this respects ANSI escape codes and
-/// never misaligns. Columns are separated by a 2-space gutter.
+/// cells. ANSI escape codes are stripped for width measurement, so
+/// colored cells never misalign. Columns are separated by a 2-space
+/// gutter.
 pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
     let cols = header.len();
     let mut widths: Vec<usize> = header.iter().map(|h| visible_width(h)).collect();
@@ -658,7 +687,12 @@ pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
     let mut out = String::new();
     // Header
     for (i, h) in header.iter().enumerate() {
-        let padded = pad_right(&paint(Style::Label, h), widths[i]);
+        let painted = paint(Style::Label, h);
+        let padded = if i + 1 < cols {
+            pad_right(&painted, widths[i])
+        } else {
+            painted
+        };
         out.push_str(&padded);
         if i + 1 < cols {
             out.push_str("  ");
@@ -667,6 +701,7 @@ pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
     out.push('\n');
     // Rows
     for r in rows {
+        let mut line = String::new();
         for (i, cell) in r.iter().enumerate().take(cols) {
             let w = if i + 1 < cols {
                 widths[i]
@@ -678,36 +713,21 @@ pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
             } else {
                 cell.clone()
             };
-            out.push_str(&padded);
+            line.push_str(&padded);
             if i + 1 < cols {
-                out.push_str("  ");
+                line.push_str("  ");
             }
         }
+        // Trim trailing whitespace on each row so uniformly-empty
+        // trailing columns (e.g. `flags` in audit when no flags fired)
+        // don't leave a halo of spaces on every line.
+        while line.ends_with(' ') {
+            line.pop();
+        }
+        out.push_str(&line);
         out.push('\n');
     }
     out
-}
-
-// ── Table wrapper (around `tabled`) ───────────────────────────────────
-
-/// Build a left-aligned, padded table from a header row and rows of
-/// already-formatted cells. No borders; minimal visual chrome — matches
-/// the "dense but breathable" style used by `eza`, `ripgrep`.
-///
-/// Caller is responsible for paint()-ing cells before passing them in.
-pub fn simple_table(header: &[&str], rows: &[Vec<String>]) -> String {
-    let mut builder = TableBuilder::default();
-    let header_row: Vec<String> = header.iter().map(|h| paint(Style::Label, h)).collect();
-    builder.push_record(header_row);
-    for r in rows {
-        builder.push_record(r.clone());
-    }
-    let mut table = builder.build();
-    table
-        .with(TableStyle::blank())
-        .with(Modify::new(Columns::new(..)).with(Padding::new(0, 2, 0, 0)))
-        .with(Modify::new(Columns::new(..)).with(Alignment::left()));
-    table.to_string()
 }
 
 // ── Progress (indicatif wrappers) ─────────────────────────────────────
@@ -845,6 +865,28 @@ mod tests {
         force_off();
         let s = kv("owner", "alice", 8);
         assert_eq!(s, "owner    alice");
+    }
+
+    #[test]
+    fn kv_grid_right_column_aligns_across_rows() {
+        force_off();
+        // Left cells have different visible widths. The right column
+        // must start at the same byte offset on every line.
+        let rows: Vec<KvRow> = vec![
+            (("owner", "a"), Some(("mode", "0644"))),
+            (("group", "verylongname"), Some(("size", "1 KB"))),
+            (("mtime", "now"), None),
+        ];
+        let out = kv_grid(&rows, 6, 2);
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines.len(), 3);
+        // Find where "mode" and "size" start on their lines.
+        let mode_off = lines[0].find("mode").unwrap();
+        let size_off = lines[1].find("size").unwrap();
+        assert_eq!(
+            mode_off, size_off,
+            "right column must align: lines were {lines:?}"
+        );
     }
 
     #[test]

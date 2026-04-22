@@ -238,7 +238,7 @@ fn walk_tree(
         }
         Err(_) => {
             let child_prefix = if is_last || is_root {
-                format!("{prefix}    ")
+                format!("{prefix}   ")
             } else {
                 format!("{prefix}{}", paint(Style::Separator, g.tree_vert))
             };
@@ -255,7 +255,7 @@ fn walk_tree(
     let child_prefix = if is_root {
         prefix.to_string()
     } else if is_last {
-        format!("{prefix}    ")
+        format!("{prefix}   ")
     } else {
         format!("{prefix}{}", paint(Style::Separator, g.tree_vert))
     };

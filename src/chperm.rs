@@ -59,7 +59,6 @@ pub fn apply_chmod_to_paths(
     ref_mode: Option<u32>,
     dry_run: bool,
 ) -> Result<(usize, usize, usize)> {
-    let stderr_tty = is_terminal::is_terminal(std::io::stderr());
     let mut changed = 0usize;
     let mut unchanged = 0usize;
     let mut failed = 0usize;
@@ -92,33 +91,28 @@ pub fn apply_chmod_to_paths(
             continue;
         }
         if dry_run {
-            if stderr_tty {
-                eprintln!(
-                    "  [dry-run] {:04o} {} {:04o}  {}",
-                    current,
-                    paint(Style::Separator, "→"),
-                    new_mode,
-                    paint(Style::Primary, &p.display().to_string())
-                );
-            } else {
-                eprintln!(
-                    "[dry-run] chmod {new_mode:04o} {}  (was {current:04o})",
-                    p.display()
-                );
-            }
+            eprintln!(
+                "  [dry-run] {:04o} {} {:04o}  {}",
+                current,
+                paint(Style::Separator, "→"),
+                new_mode,
+                paint(Style::Primary, &p.display().to_string())
+            );
             changed += 1;
         } else {
             match fs::set_permissions(p, fs::Permissions::from_mode(new_mode)) {
                 Ok(()) => {
-                    if stderr_tty {
-                        eprintln!(
-                            "  {:04o} {} {:04o}  {}",
-                            current,
-                            paint(Style::Separator, "→"),
-                            new_mode,
-                            paint(Style::Primary, &p.display().to_string())
-                        );
-                    }
+                    // Print the before→after diff line unconditionally
+                    // so piped / logged output stays auditable. `paint`
+                    // already auto-disables color when stdout is not a
+                    // tty or $NO_COLOR is set.
+                    println!(
+                        "  {:04o} {} {:04o}  {}",
+                        current,
+                        paint(Style::Separator, "→"),
+                        new_mode,
+                        paint(Style::Primary, &p.display().to_string())
+                    );
                     changed += 1;
                 }
                 Err(e) => {
@@ -145,7 +139,6 @@ pub fn apply_chown_to_paths(
     dry_run: bool,
 ) -> Result<(usize, usize, usize)> {
     use nix::unistd::{Gid, Uid};
-    let stderr_tty = is_terminal::is_terminal(std::io::stderr());
     let mut changed = 0usize;
     let mut unchanged = 0usize;
     let mut failed = 0usize;
@@ -190,17 +183,15 @@ pub fn apply_chown_to_paths(
         } else {
             match lchown(p, new_uid, new_gid) {
                 Ok(()) => {
-                    if stderr_tty {
-                        eprintln!(
-                            "  {}:{} {} {}:{}  {}",
-                            paint(Style::User, &bu),
-                            paint(Style::Group, &bg),
-                            paint(Style::Separator, "→"),
-                            paint(Style::User, &u_name),
-                            paint(Style::Group, &g_name),
-                            paint(Style::Primary, &p.display().to_string())
-                        );
-                    }
+                    println!(
+                        "  {}:{} {} {}:{}  {}",
+                        paint(Style::User, &bu),
+                        paint(Style::Group, &bg),
+                        paint(Style::Separator, "→"),
+                        paint(Style::User, &u_name),
+                        paint(Style::Group, &g_name),
+                        paint(Style::Primary, &p.display().to_string())
+                    );
                     changed += 1;
                 }
                 Err(e) => {
@@ -763,4 +754,148 @@ pub fn cmd_copy_perms(
         eprintln!("{}", summary_line(&segs));
         Ok(())
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── apply_symbolic: POSIX-ish coverage ────────────────────────────
+
+    #[test]
+    fn sym_add_single_class() {
+        // u+x on 0o644 → 0o744
+        assert_eq!(apply_symbolic(0o644, "u+x", false).unwrap(), 0o744);
+        // g+w on 0o644 → 0o664
+        assert_eq!(apply_symbolic(0o644, "g+w", false).unwrap(), 0o664);
+        // o+r on 0o640 → 0o644
+        assert_eq!(apply_symbolic(0o640, "o+r", false).unwrap(), 0o644);
+    }
+
+    #[test]
+    fn sym_remove_single_class() {
+        assert_eq!(apply_symbolic(0o777, "o-rwx", false).unwrap(), 0o770);
+        assert_eq!(apply_symbolic(0o664, "g-w", false).unwrap(), 0o644);
+    }
+
+    #[test]
+    fn sym_equals_clears_class() {
+        // g=r on 0o777 → 0o747 (group wiped, set to r only)
+        assert_eq!(apply_symbolic(0o777, "g=r", false).unwrap(), 0o747);
+        // o= on 0o777 → 0o770 (no perms given → clear other)
+        assert_eq!(apply_symbolic(0o777, "o=", false).unwrap(), 0o770);
+    }
+
+    #[test]
+    fn sym_empty_who_means_all() {
+        // "+x" (no who) adds x to all — equivalent to a+x
+        assert_eq!(apply_symbolic(0o644, "+x", false).unwrap(), 0o755);
+        // "=r" on 0o777 clears everything and sets read for all
+        // (also clears suid/sgid/sticky)
+        assert_eq!(apply_symbolic(0o7777, "=r", false).unwrap(), 0o444);
+    }
+
+    #[test]
+    fn sym_a_is_all() {
+        assert_eq!(apply_symbolic(0o000, "a+rw", false).unwrap(), 0o666);
+        assert_eq!(apply_symbolic(0o777, "a-x", false).unwrap(), 0o666);
+    }
+
+    #[test]
+    fn sym_multi_whos() {
+        // ug+x on 0o600 → 0o710
+        assert_eq!(apply_symbolic(0o600, "ug+x", false).unwrap(), 0o710);
+        // go-rwx on 0o777 → 0o700
+        assert_eq!(apply_symbolic(0o777, "go-rwx", false).unwrap(), 0o700);
+    }
+
+    #[test]
+    fn sym_comma_chain() {
+        // u=rwx,go=rx on anything → 0o755
+        assert_eq!(apply_symbolic(0o000, "u=rwx,go=rx", false).unwrap(), 0o755);
+        // Order matters: u+x,u-x → cleared
+        assert_eq!(apply_symbolic(0o600, "u+x,u-x", false).unwrap(), 0o600);
+    }
+
+    #[test]
+    fn sym_whitespace_in_parts() {
+        assert_eq!(apply_symbolic(0o600, " u+x , g+r ", false).unwrap(), 0o740);
+    }
+
+    #[test]
+    fn sym_capital_x_on_dir() {
+        // X on dir acts like x regardless of existing exec bits
+        assert_eq!(apply_symbolic(0o644, "a+X", true).unwrap(), 0o755);
+        // X on file without any exec bit is a no-op for exec
+        assert_eq!(apply_symbolic(0o644, "a+X", false).unwrap(), 0o644);
+        // X on file with at least one exec bit propagates
+        assert_eq!(apply_symbolic(0o744, "g+X", false).unwrap(), 0o754);
+    }
+
+    #[test]
+    fn sym_suid_sgid_sticky_add() {
+        // u+s sets setuid
+        assert_eq!(apply_symbolic(0o755, "u+s", false).unwrap(), 0o4755);
+        // g+s sets setgid
+        assert_eq!(apply_symbolic(0o755, "g+s", false).unwrap(), 0o2755);
+        // +t sets sticky regardless of who
+        assert_eq!(apply_symbolic(0o755, "+t", true).unwrap(), 0o1755);
+    }
+
+    #[test]
+    fn sym_suid_sgid_remove() {
+        assert_eq!(apply_symbolic(0o4755, "u-s", false).unwrap(), 0o0755);
+        assert_eq!(apply_symbolic(0o2755, "g-s", false).unwrap(), 0o0755);
+        assert_eq!(apply_symbolic(0o1755, "-t", true).unwrap(), 0o0755);
+    }
+
+    #[test]
+    fn sym_equals_clears_specials() {
+        // u=rwx on 0o4755 must clear suid (= replaces class, clearing special)
+        assert_eq!(apply_symbolic(0o4755, "u=rwx", false).unwrap(), 0o0755);
+        // g=rx on 0o2755 clears sgid
+        assert_eq!(apply_symbolic(0o2755, "g=rx", false).unwrap(), 0o0755);
+    }
+
+    #[test]
+    fn sym_bad_who_rejected() {
+        assert!(apply_symbolic(0o644, "z+r", false).is_err());
+    }
+
+    #[test]
+    fn sym_bad_perm_rejected() {
+        assert!(apply_symbolic(0o644, "u+z", false).is_err());
+    }
+
+    #[test]
+    fn sym_missing_op_rejected() {
+        assert!(apply_symbolic(0o644, "urwx", false).is_err());
+        assert!(apply_symbolic(0o644, "", false).is_err());
+    }
+
+    #[test]
+    fn sym_high_bits_truncated() {
+        // Stray bits above 7777 are masked off.
+        assert_eq!(
+            apply_symbolic(0o170000 | 0o0644, "u+x", false).unwrap(),
+            0o0744
+        );
+    }
+
+    #[test]
+    fn sym_idempotent_add() {
+        let r1 = apply_symbolic(0o644, "u+x", false).unwrap();
+        let r2 = apply_symbolic(r1, "u+x", false).unwrap();
+        assert_eq!(r1, r2);
+    }
+
+    #[test]
+    fn sym_preserves_special_on_unrelated_add() {
+        // setgid must survive o+r
+        assert_eq!(
+            apply_symbolic(0o2750, "o+r", true).unwrap(),
+            0o2754,
+            "setgid must not be cleared by unrelated +r"
+        );
+    }
 }

@@ -16,7 +16,7 @@ use crate::errors::{PmError, Result};
 use crate::helpers::{parse_access, resolve_path};
 use crate::locking::with_lock;
 use crate::matcher::ExcludeSet;
-use crate::render::{paint, Style};
+use crate::render::{self, paint, Style};
 use crate::snapshot::snapshot_with_acl;
 use crate::types::Operation;
 use crate::users::{lookup_group, lookup_user};
@@ -357,10 +357,11 @@ fn print_card(
     backup_id: Option<&str>,
     dry_run: bool,
 ) {
+    let g = render::glyphs();
     let (bullet, header) = if dry_run {
-        ("·", "would seal")
+        (g.midot, "would seal")
     } else {
-        ("✓", "sealed")
+        (g.check, "sealed")
     };
     println!(
         "{} {}",
@@ -405,6 +406,30 @@ fn print_card(
         word,
         scope_note
     );
+    // Surface a hint when the user sealed a directory non-recursively
+    // but the directory has children. Without -R only the directory's
+    // own metadata was sealed — files inside keep their previous mode /
+    // owner / ACL, which is almost never what a sysadmin expects on a
+    // first invocation. Nudge, don't force.
+    if !recursive {
+        if let Ok(md) = std::fs::symlink_metadata(base) {
+            if md.is_dir() {
+                let has_children = std::fs::read_dir(base)
+                    .map(|mut it| it.next().is_some())
+                    .unwrap_or(false);
+                if has_children {
+                    println!(
+                        "  {}  {}",
+                        paint(Style::Label, "hint     "),
+                        paint(
+                            Style::Highlight,
+                            "only the directory itself was sealed — pass -R to include its contents"
+                        )
+                    );
+                }
+            }
+        }
+    }
     if pinholes.is_empty() {
         println!(
             "  {}  {}",
