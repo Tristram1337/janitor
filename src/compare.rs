@@ -3,7 +3,7 @@
 use crate::acl::has_extended_acl;
 use crate::errors::Result;
 use crate::helpers::resolve_path;
-use crate::render::{paint, Style};
+use crate::render::{self, paint, Style};
 use nix::unistd::{Gid, Uid};
 use std::collections::BTreeMap;
 use std::fs;
@@ -167,7 +167,7 @@ pub fn cmd_compare(a: &str, b: &str, recursive: bool) -> Result<()> {
     if changed == 0 && only_a == 0 && only_b == 0 {
         println!(
             "  {}  {}",
-            paint(Style::Ok, "✓"),
+            paint(Style::Ok, render::glyphs().check),
             paint(Style::Primary, "identical")
         );
         println!();

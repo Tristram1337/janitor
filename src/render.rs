@@ -147,7 +147,8 @@ pub struct Glyphs {
     pub header_marker: &'static str, // `▸` or `>`
     pub bullet_filled: &'static str, // `●` or `[x]`
     pub bullet_empty: &'static str,  // `○` or `[ ]`
-    pub warn: &'static str,          // `⚠` or `[!]`
+    pub info: &'static str,          // `::` (pacman-style note)
+    pub warn: &'static str,          // `!!` (syslog/pacman-style)
     pub check: &'static str,         // `✓` or `[ok]`
     pub cross: &'static str,         // `✗` or `[X]`
     pub arrow_right: &'static str,   // `→` or `->`
@@ -162,7 +163,8 @@ const GLYPHS_UNICODE: Glyphs = Glyphs {
     header_marker: "▸",
     bullet_filled: "●",
     bullet_empty: "○",
-    warn: "⚠",
+    info: "::",
+    warn: "!!",
     check: "✓",
     cross: "✗",
     arrow_right: "→",
@@ -177,7 +179,8 @@ const GLYPHS_ASCII: Glyphs = Glyphs {
     header_marker: ">",
     bullet_filled: "[x]",
     bullet_empty: "[ ]",
-    warn: "[!]",
+    info: "::",
+    warn: "!!",
     check: "[ok]",
     cross: "[X]",
     arrow_right: "->",

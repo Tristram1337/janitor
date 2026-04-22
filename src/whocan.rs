@@ -178,7 +178,10 @@ pub fn cmd_who_can(path: &str, as_json: bool) -> Result<()> {
             "     {}",
             paint(
                 Style::Label,
-                "users below with no traverse are marked with ⚠"
+                &format!(
+                    "users below with no traverse are marked with {}",
+                    glyphs().warn
+                )
             )
         );
     }

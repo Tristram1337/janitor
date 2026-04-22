@@ -16,7 +16,7 @@ use crate::errors::{PmError, Result};
 use crate::helpers::{parse_access, resolve_path};
 use crate::locking::with_lock;
 use crate::matcher::ExcludeSet;
-use crate::render::{paint, Style};
+use crate::render::{self, paint, Style};
 use crate::snapshot::snapshot_with_acl;
 use crate::types::Operation;
 use crate::users::{lookup_group, lookup_user};
@@ -357,10 +357,11 @@ fn print_card(
     backup_id: Option<&str>,
     dry_run: bool,
 ) {
+    let g = render::glyphs();
     let (bullet, header) = if dry_run {
-        ("·", "would seal")
+        (g.midot, "would seal")
     } else {
-        ("✓", "sealed")
+        (g.check, "sealed")
     };
     println!(
         "{} {}",
