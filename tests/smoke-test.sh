@@ -84,7 +84,7 @@ assert "acl --help"                  $JAN acl --help
 assert "acl grant --help"            $JAN acl grant --help
 
 VER_OUT=$($JAN --version 2>&1)
-assert_grep "version has 0.1.1"      "$VER_OUT" "0.1.1"
+assert_grep "version is semver"      "$VER_OUT" '^janitor [0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*$'
 
 HLP=$($JAN --help 2>&1)
 assert_grep "help advertises -n"     "$HLP" '\-n, \-\-dry-run'
