@@ -59,7 +59,6 @@ pub fn apply_chmod_to_paths(
     ref_mode: Option<u32>,
     dry_run: bool,
 ) -> Result<(usize, usize, usize)> {
-    let stderr_tty = is_terminal::is_terminal(std::io::stderr());
     let mut changed = 0usize;
     let mut unchanged = 0usize;
     let mut failed = 0usize;
@@ -92,33 +91,28 @@ pub fn apply_chmod_to_paths(
             continue;
         }
         if dry_run {
-            if stderr_tty {
-                eprintln!(
-                    "  [dry-run] {:04o} {} {:04o}  {}",
-                    current,
-                    paint(Style::Separator, "→"),
-                    new_mode,
-                    paint(Style::Primary, &p.display().to_string())
-                );
-            } else {
-                eprintln!(
-                    "[dry-run] chmod {new_mode:04o} {}  (was {current:04o})",
-                    p.display()
-                );
-            }
+            eprintln!(
+                "  [dry-run] {:04o} {} {:04o}  {}",
+                current,
+                paint(Style::Separator, "→"),
+                new_mode,
+                paint(Style::Primary, &p.display().to_string())
+            );
             changed += 1;
         } else {
             match fs::set_permissions(p, fs::Permissions::from_mode(new_mode)) {
                 Ok(()) => {
-                    if stderr_tty {
-                        eprintln!(
-                            "  {:04o} {} {:04o}  {}",
-                            current,
-                            paint(Style::Separator, "→"),
-                            new_mode,
-                            paint(Style::Primary, &p.display().to_string())
-                        );
-                    }
+                    // Print the before→after diff line unconditionally
+                    // so piped / logged output stays auditable. `paint`
+                    // already auto-disables color when stdout is not a
+                    // tty or $NO_COLOR is set.
+                    println!(
+                        "  {:04o} {} {:04o}  {}",
+                        current,
+                        paint(Style::Separator, "→"),
+                        new_mode,
+                        paint(Style::Primary, &p.display().to_string())
+                    );
                     changed += 1;
                 }
                 Err(e) => {
@@ -145,7 +139,6 @@ pub fn apply_chown_to_paths(
     dry_run: bool,
 ) -> Result<(usize, usize, usize)> {
     use nix::unistd::{Gid, Uid};
-    let stderr_tty = is_terminal::is_terminal(std::io::stderr());
     let mut changed = 0usize;
     let mut unchanged = 0usize;
     let mut failed = 0usize;
@@ -190,17 +183,15 @@ pub fn apply_chown_to_paths(
         } else {
             match lchown(p, new_uid, new_gid) {
                 Ok(()) => {
-                    if stderr_tty {
-                        eprintln!(
-                            "  {}:{} {} {}:{}  {}",
-                            paint(Style::User, &bu),
-                            paint(Style::Group, &bg),
-                            paint(Style::Separator, "→"),
-                            paint(Style::User, &u_name),
-                            paint(Style::Group, &g_name),
-                            paint(Style::Primary, &p.display().to_string())
-                        );
-                    }
+                    println!(
+                        "  {}:{} {} {}:{}  {}",
+                        paint(Style::User, &bu),
+                        paint(Style::Group, &bg),
+                        paint(Style::Separator, "→"),
+                        paint(Style::User, &u_name),
+                        paint(Style::Group, &g_name),
+                        paint(Style::Primary, &p.display().to_string())
+                    );
                     changed += 1;
                 }
                 Err(e) => {

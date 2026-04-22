@@ -691,6 +691,7 @@ pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
     out.push('\n');
     // Rows
     for r in rows {
+        let mut line = String::new();
         for (i, cell) in r.iter().enumerate().take(cols) {
             let w = if i + 1 < cols {
                 widths[i]
@@ -702,11 +703,18 @@ pub fn aligned_table(header: &[&str], rows: &[Vec<String>]) -> String {
             } else {
                 cell.clone()
             };
-            out.push_str(&padded);
+            line.push_str(&padded);
             if i + 1 < cols {
-                out.push_str("  ");
+                line.push_str("  ");
             }
         }
+        // Trim trailing whitespace on each row so uniformly-empty
+        // trailing columns (e.g. `flags` in audit when no flags fired)
+        // don't leave a halo of spaces on every line.
+        while line.ends_with(' ') {
+            line.pop();
+        }
+        out.push_str(&line);
         out.push('\n');
     }
     out
